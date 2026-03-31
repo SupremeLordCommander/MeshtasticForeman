@@ -32,6 +32,7 @@ export type ServerEvent =
 export const sendMessageSchema = z.object({
   type: z.literal("message:send"),
   payload: z.object({
+    deviceId: z.string().uuid(),
     text: z.string().min(1).max(228),
     toNodeId: z.number().int(),
     channelIndex: z.number().int().min(0).max(7),
@@ -42,6 +43,7 @@ export const sendMessageSchema = z.object({
 export const subscribePacketsSchema = z.object({
   type: z.literal("packets:subscribe"),
   payload: z.object({
+    deviceId: z.string().uuid(),
     enabled: z.boolean(),
   }),
 });
@@ -49,6 +51,7 @@ export const subscribePacketsSchema = z.object({
 export const requestHistorySchema = z.object({
   type: z.literal("messages:request-history"),
   payload: z.object({
+    deviceId: z.string().uuid(),
     channelIndex: z.number().int().optional(),
     toNodeId: z.number().int().optional(),
     limit: z.number().int().min(1).max(500).default(100),

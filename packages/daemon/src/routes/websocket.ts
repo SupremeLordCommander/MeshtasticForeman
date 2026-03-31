@@ -89,19 +89,46 @@ async function handleClientCommand(
   _deviceManager: DeviceManager
 ) {
   switch (command.type) {
-    case "message:send":
-      // TODO: route to correct MeshDevice and call sendText()
-      console.log("[ws] message:send", command.payload);
+    case "message:send": {
+      const device = _deviceManager.getDevice(command.payload.deviceId);
+      if (!device) {
+        _socket.send(JSON.stringify({
+          type: "error",
+          payload: { code: "DEVICE_NOT_FOUND", message: `No device with id ${command.payload.deviceId}` },
+        }));
+        return;
+      }
+      // TODO: call device.meshDevice.sendText(text, toNodeId, channelIndex, wantAck)
+      console.log("[ws] message:send →", device.name, command.payload);
       break;
+    }
 
-    case "packets:subscribe":
-      // TODO: toggle raw packet streaming for this client
-      console.log("[ws] packets:subscribe", command.payload);
+    case "packets:subscribe": {
+      const device = _deviceManager.getDevice(command.payload.deviceId);
+      if (!device) {
+        _socket.send(JSON.stringify({
+          type: "error",
+          payload: { code: "DEVICE_NOT_FOUND", message: `No device with id ${command.payload.deviceId}` },
+        }));
+        return;
+      }
+      // TODO: toggle raw packet streaming for this client+device pair
+      console.log("[ws] packets:subscribe →", device.name, command.payload.enabled);
       break;
+    }
 
-    case "messages:request-history":
+    case "messages:request-history": {
+      const device = _deviceManager.getDevice(command.payload.deviceId);
+      if (!device) {
+        _socket.send(JSON.stringify({
+          type: "error",
+          payload: { code: "DEVICE_NOT_FOUND", message: `No device with id ${command.payload.deviceId}` },
+        }));
+        return;
+      }
       // TODO: query messages table and send back history
-      console.log("[ws] messages:request-history", command.payload);
+      console.log("[ws] messages:request-history →", device.name, command.payload);
       break;
+    }
   }
 }
