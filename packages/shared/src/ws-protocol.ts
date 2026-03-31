@@ -1,0 +1,65 @@
+import { z } from "zod";
+import type {
+  DeviceInfo,
+  NodeInfo,
+  Message,
+  Packet,
+  Channel,
+  Waypoint,
+} from "./types.js";
+
+// ---------------------------------------------------------------------------
+// Server → Client events
+// ---------------------------------------------------------------------------
+
+export type ServerEvent =
+  | { type: "device:status"; payload: DeviceInfo }
+  | { type: "device:list"; payload: DeviceInfo[] }
+  | { type: "node:update"; payload: NodeInfo }
+  | { type: "node:list"; payload: NodeInfo[] }
+  | { type: "message:received"; payload: Message }
+  | { type: "message:history"; payload: Message[] }
+  | { type: "packet:raw"; payload: Packet }
+  | { type: "channel:list"; payload: Channel[] }
+  | { type: "waypoint:update"; payload: Waypoint }
+  | { type: "waypoint:list"; payload: Waypoint[] }
+  | { type: "error"; payload: { code: string; message: string } };
+
+// ---------------------------------------------------------------------------
+// Client → Server commands
+// ---------------------------------------------------------------------------
+
+export const sendMessageSchema = z.object({
+  type: z.literal("message:send"),
+  payload: z.object({
+    text: z.string().min(1).max(228),
+    toNodeId: z.number().int(),
+    channelIndex: z.number().int().min(0).max(7),
+    wantAck: z.boolean().default(true),
+  }),
+});
+
+export const subscribePacketsSchema = z.object({
+  type: z.literal("packets:subscribe"),
+  payload: z.object({
+    enabled: z.boolean(),
+  }),
+});
+
+export const requestHistorySchema = z.object({
+  type: z.literal("messages:request-history"),
+  payload: z.object({
+    channelIndex: z.number().int().optional(),
+    toNodeId: z.number().int().optional(),
+    limit: z.number().int().min(1).max(500).default(100),
+    before: z.string().datetime().optional(),
+  }),
+});
+
+export const clientCommandSchema = z.discriminatedUnion("type", [
+  sendMessageSchema,
+  subscribePacketsSchema,
+  requestHistorySchema,
+]);
+
+export type ClientCommand = z.infer<typeof clientCommandSchema>;
