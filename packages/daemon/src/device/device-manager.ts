@@ -1,17 +1,18 @@
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
+import { Buffer } from "node:buffer";
 import type { PGlite } from "@electric-sql/pglite";
-import type { ServerEvent } from "@foreman/shared";
-
-// Placeholder imports — these will resolve once @meshtastic packages are installed
-// import { MeshDevice } from "@meshtastic/core";
-// import { SerialConnection } from "@meshtastic/transport-node-serial";
+import type { ServerEvent, Message } from "@foreman/shared";
+import { MeshDevice, Types, Protobuf } from "@meshtastic/core";
+import { TransportNodeSerial } from "@meshtastic/transport-node-serial";
 
 export interface ConnectedDevice {
   id: string;
   port: string;
   name: string;
-  // device: MeshDevice;  // uncomment once transport packages installed
+  connectedAt: string;
+  meshDevice: MeshDevice;
+  transport: TransportNodeSerial;
 }
 
 /**
@@ -27,6 +28,8 @@ export interface ConnectedDevice {
  */
 export class DeviceManager extends EventEmitter {
   private devices = new Map<string, ConnectedDevice>();
+  /** Ports with a pending reconnect timer — prevents stacked reconnect loops */
+  private reconnectingPorts = new Set<string>();
 
   constructor(private readonly db: PGlite) {
     super();
@@ -72,33 +75,56 @@ export class DeviceManager extends EventEmitter {
       [id, name, port]
     );
 
-    // TODO: instantiate real MeshDevice + SerialConnection here once
-    // transport packages are confirmed compatible with Node ESM.
-    // The pattern will be:
-    //
-    //   const connection = new SerialConnection(id);
-    //   await connection.connect({ portPath: port, baudRate: 115200 });
-    //   connection.device.events.onMeshPacket.subscribe((packet) => {
-    //     this.handlePacket(id, packet);
-    //   });
+    this._emitStatus(id, name, port, "connecting");
 
-    const device: ConnectedDevice = { id, port, name };
+    // Open serial port and create transport
+    const transport = await TransportNodeSerial.create(port, 115200);
+
+    // MeshDevice constructor starts piping the fromDevice stream immediately
+    const meshDevice = new MeshDevice(transport);
+
+    const connectedAt = new Date().toISOString();
+    const device: ConnectedDevice = { id, port, name, connectedAt, meshDevice, transport };
     this.devices.set(id, device);
 
-    const event: ServerEvent = {
-      type: "device:status",
-      payload: {
-        id,
-        name,
-        port,
-        status: "connected",
-        connectedAt: new Date().toISOString(),
-        lastSeenAt: null,
-        hardwareModel: null,
-        firmwareVersion: null,
-      },
-    };
-    this.emit("event", event);
+    // Subscribe to all relevant events
+    meshDevice.events.onMessagePacket.subscribe((pkt: Types.PacketMetadata<string>) => {
+      this._handleMessage(id, pkt).catch((err) =>
+        console.error(`[devices] message error on ${name}:`, err)
+      );
+    });
+
+    // Protobuf types come from @meshtastic/protobufs which is bundled into core;
+    // using `any` here since the package isn't separately resolvable by TypeScript.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    meshDevice.events.onMeshPacket.subscribe((pkt: any) => {
+      this._handleRawPacket(id, pkt).catch((err) =>
+        console.error(`[devices] raw packet error on ${name}:`, err)
+      );
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    meshDevice.events.onNodeInfoPacket.subscribe((nodeInfo: any) => {
+      this._handleNodeInfo(id, nodeInfo).catch((err) =>
+        console.error(`[devices] node info error on ${name}:`, err)
+      );
+    });
+
+    meshDevice.events.onDeviceStatus.subscribe((status: Types.DeviceStatusEnum) => {
+      this._handleDeviceStatus(id, name, port, status);
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    meshDevice.events.onDeviceMetadataPacket.subscribe(({ data }: any) => {
+      this._handleMetadata(id, data).catch((err) =>
+        console.error(`[devices] metadata error on ${name}:`, err)
+      );
+    });
+
+    // Send configure request — device will begin streaming its config back
+    await meshDevice.configure();
+
+    this._emitStatus(id, name, port, "connected", connectedAt);
     console.log(`[devices] connected ${name} on ${port} (id=${id})`);
 
     return device;
@@ -108,24 +134,10 @@ export class DeviceManager extends EventEmitter {
     const device = this.devices.get(deviceId);
     if (!device) return;
 
-    // TODO: close MeshDevice connection
-
     this.devices.delete(deviceId);
+    await device.transport.disconnect().catch(() => {});
 
-    const event: ServerEvent = {
-      type: "device:status",
-      payload: {
-        id: deviceId,
-        name: device.name,
-        port: device.port,
-        status: "disconnected",
-        connectedAt: null,
-        lastSeenAt: null,
-        hardwareModel: null,
-        firmwareVersion: null,
-      },
-    };
-    this.emit("event", event);
+    this._emitStatus(deviceId, device.name, device.port, "disconnected");
     console.log(`[devices] disconnected ${device.name}`);
   }
 
@@ -133,10 +145,336 @@ export class DeviceManager extends EventEmitter {
     return this.devices.get(id);
   }
 
-  /** Called for every decoded packet received from a device. Logs to DB and emits. */
-  private async handlePacket(_deviceId: string, _packet: unknown) {
-    // Will be implemented when MeshDevice integration is wired up.
-    // Pattern: decode portnum, store in packets table, emit "packet:raw" event,
-    // and if portnum === TEXT_MESSAGE_APP, also store in messages table and emit "message:received"
+  async getMessageHistory(
+    deviceId: string,
+    opts: { channelIndex?: number; toNodeId?: number; limit: number; before?: string }
+  ): Promise<Message[]> {
+    let query = `
+      SELECT id, packet_id, from_node_id, to_node_id, channel_index, text,
+             rx_time, rx_snr, rx_rssi, hop_limit, want_ack, via_mqtt
+      FROM messages
+      WHERE device_id = $1`;
+    const params: unknown[] = [deviceId];
+    let p = 2;
+
+    if (opts.channelIndex !== undefined) {
+      query += ` AND channel_index = $${p++}`;
+      params.push(opts.channelIndex);
+    }
+    if (opts.toNodeId !== undefined) {
+      query += ` AND to_node_id = $${p++}`;
+      params.push(opts.toNodeId);
+    }
+    if (opts.before) {
+      query += ` AND rx_time < $${p++}`;
+      params.push(opts.before);
+    }
+    query += ` ORDER BY rx_time DESC LIMIT $${p}`;
+    params.push(opts.limit);
+
+    const { rows } = await this.db.query<{
+      id: string;
+      packet_id: number;
+      from_node_id: number;
+      to_node_id: number;
+      channel_index: number;
+      text: string;
+      rx_time: string;
+      rx_snr: number | null;
+      rx_rssi: number | null;
+      hop_limit: number | null;
+      want_ack: boolean;
+      via_mqtt: boolean;
+    }>(query, params);
+
+    return rows.map((r) => ({
+      id: r.id,
+      packetId: r.packet_id,
+      fromNodeId: r.from_node_id,
+      toNodeId: r.to_node_id,
+      channelIndex: r.channel_index,
+      text: r.text,
+      rxTime: r.rx_time,
+      rxSnr: r.rx_snr,
+      rxRssi: r.rx_rssi,
+      hopLimit: r.hop_limit,
+      wantAck: r.want_ack,
+      viaMqtt: r.via_mqtt,
+    }));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Private helpers
+  // ---------------------------------------------------------------------------
+
+  private _emitStatus(
+    id: string,
+    name: string,
+    port: string,
+    status: "disconnected" | "connecting" | "connected" | "error",
+    connectedAt?: string
+  ) {
+    const event: ServerEvent = {
+      type: "device:status",
+      payload: {
+        id,
+        name,
+        port,
+        status,
+        connectedAt: connectedAt ?? null,
+        lastSeenAt: null,
+        hardwareModel: null,
+        firmwareVersion: null,
+      },
+    };
+    this.emit("event", event);
+  }
+
+  private _handleDeviceStatus(
+    deviceId: string,
+    name: string,
+    port: string,
+    status: Types.DeviceStatusEnum
+  ) {
+    if (status === Types.DeviceStatusEnum.DeviceDisconnected) {
+      this.devices.delete(deviceId);
+      this._emitStatus(deviceId, name, port, "disconnected");
+      console.log(`[devices] ${name} disconnected — scheduling reconnect in 5s`);
+      this._scheduleReconnect(deviceId, port, name);
+    }
+  }
+
+  private _scheduleReconnect(deviceId: string, port: string, name: string) {
+    if (this.reconnectingPorts.has(port)) return;
+    this.reconnectingPorts.add(port);
+    setTimeout(async () => {
+      this.reconnectingPorts.delete(port);
+      if (this.devices.has(deviceId)) return; // already reconnected by another path
+      console.log(`[devices] attempting reconnect for ${name} on ${port}`);
+      await this.connect(port, name, deviceId).catch((err) => {
+        console.warn(`[devices] reconnect failed for ${port}:`, err.message);
+        // Will retry on next disconnect event if the device comes back
+      });
+    }, 5000);
+  }
+
+  private async _handleMessage(
+    deviceId: string,
+    packet: Types.PacketMetadata<string>
+  ) {
+    const id = randomUUID();
+    const rxTime = packet.rxTime.toISOString();
+
+    await this.db.query(
+      `INSERT INTO messages(id, packet_id, device_id, from_node_id, to_node_id, channel_index, text, rx_time)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       ON CONFLICT(id) DO NOTHING`,
+      [id, packet.id, deviceId, packet.from, packet.to, packet.channel, packet.data, rxTime]
+    );
+    await this.db.query("UPDATE devices SET last_seen = $1 WHERE id = $2", [rxTime, deviceId]);
+
+    const event: ServerEvent = {
+      type: "message:received",
+      payload: {
+        id,
+        packetId: packet.id,
+        fromNodeId: packet.from,
+        toNodeId: packet.to,
+        channelIndex: packet.channel,
+        text: packet.data,
+        rxTime,
+        rxSnr: null,
+        rxRssi: null,
+        hopLimit: null,
+        wantAck: false,
+        viaMqtt: false,
+      },
+    };
+    this.emit("event", event);
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async _handleRawPacket(deviceId: string, meshPacket: any) {
+    // Use type assertion to access protobuf-es generated fields
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const p = meshPacket as any;
+    const isDecoded = p.payloadVariant?.case === "decoded";
+    const isEncrypted = p.payloadVariant?.case === "encrypted";
+
+    const portnum: number = isDecoded ? (p.payloadVariant.value.portnum ?? 0) : 0;
+    const portnumName: string =
+      (Protobuf.Portnums.PortNum as Record<number, string>)[portnum] ?? "UNKNOWN_APP";
+
+    const rxTimeSec: number = p.rxTime ?? 0;
+    const rxTime = rxTimeSec > 0
+      ? new Date(rxTimeSec * 1000).toISOString()
+      : new Date().toISOString();
+
+    let payloadRaw: string | null = null;
+    if (isDecoded && p.payloadVariant.value.payload instanceof Uint8Array) {
+      payloadRaw = Buffer.from(p.payloadVariant.value.payload).toString("base64");
+    } else if (isEncrypted && p.payloadVariant.value instanceof Uint8Array) {
+      payloadRaw = Buffer.from(p.payloadVariant.value).toString("base64");
+    }
+
+    const id = randomUUID();
+    await this.db.query(
+      `INSERT INTO packets(id, packet_id, device_id, from_node_id, to_node_id, channel,
+         portnum, portnum_name, rx_time, rx_snr, rx_rssi, hop_limit, hop_start,
+         want_ack, via_mqtt, payload_raw)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+      [
+        id,
+        p.id ?? 0,
+        deviceId,
+        p.from ?? 0,
+        p.to ?? 0,
+        p.channel ?? 0,
+        portnum,
+        portnumName,
+        rxTime,
+        p.rxSnr || null,
+        p.rxRssi || null,
+        p.hopLimit || null,
+        p.hopStart || null,
+        p.wantAck ?? false,
+        p.viaMqtt ?? false,
+        payloadRaw,
+      ]
+    );
+
+    const event: ServerEvent = {
+      type: "packet:raw",
+      payload: {
+        id,
+        packetId: p.id ?? 0,
+        fromNodeId: p.from ?? 0,
+        toNodeId: p.to ?? 0,
+        channel: p.channel ?? 0,
+        portnum,
+        portnumName,
+        rxTime,
+        rxSnr: p.rxSnr || null,
+        rxRssi: p.rxRssi || null,
+        hopLimit: p.hopLimit || null,
+        hopStart: p.hopStart || null,
+        wantAck: p.wantAck ?? false,
+        viaMqtt: p.viaMqtt ?? false,
+        payloadRaw,
+        decodedJson: null,
+      },
+    };
+    this.emit("event", event);
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async _handleNodeInfo(deviceId: string, nodeInfo: any) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const n = nodeInfo as any;
+    const nodeId: number = n.num ?? 0;
+    if (nodeId === 0) return;
+
+    const macBytes: Uint8Array | undefined = n.user?.macaddr;
+    const macAddress = macBytes && macBytes.length > 0
+      ? Array.from(macBytes).map((b: number) => b.toString(16).padStart(2, "0")).join(":")
+      : null;
+
+    const pubKeyBytes: Uint8Array | undefined = n.user?.publicKey;
+    const publicKey = pubKeyBytes && pubKeyBytes.length > 0
+      ? Buffer.from(pubKeyBytes).toString("hex")
+      : null;
+
+    const lastHeardSec: number = n.lastHeard ?? 0;
+    const lastHeard = lastHeardSec > 0
+      ? new Date(lastHeardSec * 1000).toISOString()
+      : null;
+
+    const lat = n.position?.latitudeI ? n.position.latitudeI / 1e7 : null;
+    const lon = n.position?.longitudeI ? n.position.longitudeI / 1e7 : null;
+    const alt = n.position?.altitude ?? null;
+
+    await this.db.query(
+      `INSERT INTO nodes(node_id, device_id, long_name, short_name, mac_address,
+         hw_model, public_key, last_heard, snr, hops_away, latitude, longitude, altitude)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+       ON CONFLICT(node_id, device_id) DO UPDATE SET
+         long_name  = COALESCE(EXCLUDED.long_name,  nodes.long_name),
+         short_name = COALESCE(EXCLUDED.short_name, nodes.short_name),
+         mac_address = COALESCE(EXCLUDED.mac_address, nodes.mac_address),
+         hw_model   = COALESCE(EXCLUDED.hw_model,   nodes.hw_model),
+         public_key = COALESCE(EXCLUDED.public_key, nodes.public_key),
+         last_heard = COALESCE(EXCLUDED.last_heard, nodes.last_heard),
+         snr        = COALESCE(EXCLUDED.snr,        nodes.snr),
+         hops_away  = COALESCE(EXCLUDED.hops_away,  nodes.hops_away),
+         latitude   = COALESCE(EXCLUDED.latitude,   nodes.latitude),
+         longitude  = COALESCE(EXCLUDED.longitude,  nodes.longitude),
+         altitude   = COALESCE(EXCLUDED.altitude,   nodes.altitude)`,
+      [
+        nodeId,
+        deviceId,
+        n.user?.longName ?? null,
+        n.user?.shortName ?? null,
+        macAddress,
+        n.user?.hwModel ?? null,
+        publicKey,
+        lastHeard,
+        n.snr || null,
+        n.hopsAway ?? null,
+        lat,
+        lon,
+        alt,
+      ]
+    );
+
+    const event: ServerEvent = {
+      type: "node:update",
+      payload: {
+        nodeId,
+        longName: n.user?.longName ?? null,
+        shortName: n.user?.shortName ?? null,
+        macAddress,
+        hwModel: n.user?.hwModel ?? null,
+        publicKey,
+        lastHeard,
+        snr: n.snr || null,
+        hopsAway: n.hopsAway ?? null,
+        latitude: lat,
+        longitude: lon,
+        altitude: alt,
+      },
+    };
+    this.emit("event", event);
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async _handleMetadata(deviceId: string, meta: any) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const m = meta as any;
+    const hwModel: string | null = m.hwModel != null ? String(m.hwModel) : null;
+    const firmware: string | null = m.firmwareVersion ?? null;
+
+    await this.db.query(
+      "UPDATE devices SET hw_model = $1, firmware = $2 WHERE id = $3",
+      [hwModel, firmware, deviceId]
+    );
+
+    // Re-emit device status with updated hw/firmware info
+    const device = this.devices.get(deviceId);
+    if (device) {
+      const event: ServerEvent = {
+        type: "device:status",
+        payload: {
+          id: deviceId,
+          name: device.name,
+          port: device.port,
+          status: "connected",
+          connectedAt: device.connectedAt,
+          lastSeenAt: null,
+          hardwareModel: hwModel,
+          firmwareVersion: firmware,
+        },
+      };
+      this.emit("event", event);
+    }
   }
 }

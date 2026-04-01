@@ -1,7 +1,8 @@
 import type { FastifyInstance } from "fastify";
-import type { WebSocket } from "ws";
+import type { WebSocket, RawData } from "ws";
 import type { ServerEvent, ClientCommand } from "@foreman/shared";
 import { clientCommandSchema } from "@foreman/shared";
+import { Types } from "@meshtastic/core";
 import type { DeviceManager } from "../device/device-manager.js";
 
 /**
@@ -14,19 +15,21 @@ export async function registerWsRoute(
   app: FastifyInstance,
   deviceManager: DeviceManager
 ) {
-  // Broadcast to all connected clients
   const clients = new Set<WebSocket>();
+  /** Sockets that have opted in to raw packet streaming */
+  const packetSubscriptions = new Set<WebSocket>();
 
   const broadcast = (event: ServerEvent) => {
+    // packet:raw only goes to subscribed clients
+    const targets = event.type === "packet:raw" ? packetSubscriptions : clients;
     const json = JSON.stringify(event);
-    for (const client of clients) {
+    for (const client of targets) {
       if (client.readyState === 1 /* OPEN */) {
         client.send(json);
       }
     }
   };
 
-  // Forward device events to all WebSocket clients
   deviceManager.on("event", broadcast);
 
   app.get("/ws", { websocket: true }, (socket) => {
@@ -51,7 +54,7 @@ export async function registerWsRoute(
       socket.send(JSON.stringify(event));
     });
 
-    socket.on("message", (raw) => {
+    socket.on("message", (raw: RawData) => {
       let parsed: ClientCommand;
       try {
         parsed = clientCommandSchema.parse(JSON.parse(raw.toString()));
@@ -65,7 +68,7 @@ export async function registerWsRoute(
         return;
       }
 
-      handleClientCommand(parsed, socket, deviceManager).catch((err) => {
+      handleClientCommand(parsed, socket, deviceManager, packetSubscriptions).catch((err) => {
         console.error("[ws] command error:", err);
         socket.send(
           JSON.stringify({
@@ -78,6 +81,7 @@ export async function registerWsRoute(
 
     socket.on("close", () => {
       clients.delete(socket);
+      packetSubscriptions.delete(socket);
       console.log(`[ws] client disconnected (total=${clients.size})`);
     });
   });
@@ -85,49 +89,68 @@ export async function registerWsRoute(
 
 async function handleClientCommand(
   command: ClientCommand,
-  _socket: WebSocket,
-  _deviceManager: DeviceManager
+  socket: WebSocket,
+  deviceManager: DeviceManager,
+  packetSubscriptions: Set<WebSocket>
 ) {
   switch (command.type) {
     case "message:send": {
-      const device = _deviceManager.getDevice(command.payload.deviceId);
+      const device = deviceManager.getDevice(command.payload.deviceId);
       if (!device) {
-        _socket.send(JSON.stringify({
+        socket.send(JSON.stringify({
           type: "error",
           payload: { code: "DEVICE_NOT_FOUND", message: `No device with id ${command.payload.deviceId}` },
         }));
         return;
       }
-      // TODO: call device.meshDevice.sendText(text, toNodeId, channelIndex, wantAck)
-      console.log("[ws] message:send →", device.name, command.payload);
+      const { text, toNodeId, channelIndex, wantAck } = command.payload;
+      await device.meshDevice.sendText(
+        text,
+        toNodeId,
+        wantAck,
+        channelIndex as Types.ChannelNumber
+      );
+      console.log(`[ws] message:send → ${device.name} to node ${toNodeId}`);
       break;
     }
 
     case "packets:subscribe": {
-      const device = _deviceManager.getDevice(command.payload.deviceId);
+      const device = deviceManager.getDevice(command.payload.deviceId);
       if (!device) {
-        _socket.send(JSON.stringify({
+        socket.send(JSON.stringify({
           type: "error",
           payload: { code: "DEVICE_NOT_FOUND", message: `No device with id ${command.payload.deviceId}` },
         }));
         return;
       }
-      // TODO: toggle raw packet streaming for this client+device pair
-      console.log("[ws] packets:subscribe →", device.name, command.payload.enabled);
+      if (command.payload.enabled) {
+        packetSubscriptions.add(socket);
+      } else {
+        packetSubscriptions.delete(socket);
+      }
+      console.log(`[ws] packets:subscribe → ${device.name}, enabled=${command.payload.enabled}`);
       break;
     }
 
     case "messages:request-history": {
-      const device = _deviceManager.getDevice(command.payload.deviceId);
+      const { deviceId, channelIndex, toNodeId, limit, before } = command.payload;
+      const device = deviceManager.getDevice(deviceId);
       if (!device) {
-        _socket.send(JSON.stringify({
+        socket.send(JSON.stringify({
           type: "error",
-          payload: { code: "DEVICE_NOT_FOUND", message: `No device with id ${command.payload.deviceId}` },
+          payload: { code: "DEVICE_NOT_FOUND", message: `No device with id ${deviceId}` },
         }));
         return;
       }
-      // TODO: query messages table and send back history
-      console.log("[ws] messages:request-history →", device.name, command.payload);
+      const messages = await deviceManager.getMessageHistory(deviceId, {
+        channelIndex,
+        toNodeId,
+        limit,
+        before,
+      });
+      const event: ServerEvent = { type: "message:history", payload: messages };
+      socket.send(JSON.stringify(event));
+      console.log(`[ws] messages:request-history → ${device.name}, returned ${messages.length} messages`);
       break;
     }
   }
