@@ -8,6 +8,7 @@ import { join, dirname } from "node:path";
 import { db } from "./db/client.js";
 import { runMigrations } from "./db/migrations.js";
 import { DeviceManager } from "./device/device-manager.js";
+import { MqttGateway } from "./mqtt/gateway.js";
 import { registerDeviceRoutes } from "./routes/devices.js";
 import { registerWsRoute } from "./routes/websocket.js";
 
@@ -36,7 +37,32 @@ async function main() {
 
   // 3. Device manager (owns all serial/TCP connections)
   const deviceManager = new DeviceManager(db);
-  await deviceManager.reconnectSaved();
+
+  // 4. MQTT gateway (optional — only starts if MQTT_BROKER is set)
+  if (process.env.MQTT_BROKER) {
+    const gateway = new MqttGateway({
+      broker:    process.env.MQTT_BROKER,
+      port:      Number(process.env.MQTT_PORT ?? 1883),
+      username:  process.env.MQTT_USER ?? "meshdev",
+      password:  process.env.MQTT_PASS ?? "large4cats",
+      rootTopic: process.env.MQTT_ROOT ?? "msh/US",
+    });
+    gateway.start();
+    deviceManager.setMqttGateway(gateway);
+    console.log(`[mqtt] gateway configured → ${process.env.MQTT_BROKER}`);
+  }
+
+  // Auto-connect to device specified in env (takes priority over DB-saved devices)
+  if (process.env.MESHTASTIC_PORT) {
+    const port = process.env.MESHTASTIC_PORT;
+    const name = process.env.MESHTASTIC_NAME ?? port;
+    console.log(`[foreman] auto-connecting to ${port}`);
+    await deviceManager.connect(port, name).catch((err) => {
+      console.error(`[foreman] failed to connect to ${port}:`, err.message);
+    });
+  } else {
+    await deviceManager.reconnectSaved();
+  }
 
   // 4. Routes
   await registerDeviceRoutes(app, deviceManager);

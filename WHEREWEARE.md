@@ -114,6 +114,52 @@ PGlite data directory: `./pglite-data` (relative to repo root, gitignored). Over
 
 ---
 
+## MQTT Gateway — Status: WORKING
+
+The device is a **SEEED_WIO_TRACKER_L1** (nRF52840-based). nRF52840 has no WiFi, so the device's built-in MQTT module cannot connect to the internet independently. The Python proxy in `Samples/proxy.py` is the correct and permanent architecture for this hardware — not a workaround.
+
+### What proxy.py does
+
+- Connects to the device via serial using the meshtastic Python library
+- Receives all mesh packets the device hears (its own + relayed from other nodes)
+- Re-serializes the decoded protobuf payload, re-encrypts using the channel PSK, and publishes a proper `ServiceEnvelope` protobuf to the correct MQTT topic
+- Proactively announces the local node (NODEINFO + POSITION + MAP_REPORT) on startup and every 15 minutes
+
+### Topic structure
+
+| Topic | Format | Content |
+|---|---|---|
+| `{root}/2/e/LongFast/{!gatewayId}` | ServiceEnvelope (encrypted) | All mesh traffic (POSITION, NODEINFO, TEXT, TELEMETRY, ROUTING) |
+| `{root}/2/map/` | ServiceEnvelope (unencrypted) | MAP_REPORT_APP — public node metadata for the map |
+
+### Key implementation details
+
+- **Encryption**: AES-128-CTR. Key = channel PSK read from device on startup (default LongFast = `1PG7OiApB1nwvP+rz05pAQ==`). Nonce = `packetId(8B LE) + fromNode(8B LE)`.
+- **Map reports** (`2/map/`): unencrypted MeshPacket (`decoded` variant, not `encrypted`). The map server reads these without needing the channel key.
+- **Gateway ID**: local device's node ID (`!{nodeNum:08x}`) goes in the topic and `ServiceEnvelope.gateway_id`. Individual packet senders are identified by the `from` field inside the MeshPacket.
+- **Re-publishing loop prevention**: packets with `viaMqtt=True` are skipped.
+
+### Confirmed working
+
+- Local device (`!9ee3d61e`) appears on `meshtastic.org/map`
+- Other nodes heard via radio also appear on the map with relay path shown through `!9ee3d61e`
+
+### Configuration
+
+`Samples/.env` (copy from `Samples/.env.example`):
+```
+MESHTASTIC_PORT=COM7
+MQTT_BROKER=mqtt.meshtastic.org
+MQTT_PORT=1883
+MQTT_USER=meshdev
+MQTT_PASS=large4cats
+MQTT_ROOT=msh/US/CA/Humboldt/Eureka
+```
+
+Dependencies: `pip install -r Samples/requirements.txt`
+
+---
+
 ## What Is NOT Wired Up Yet (next work)
 
 The `DeviceManager` has the multi-device Map and DB persistence in place, but the actual `MeshDevice` + `SerialConnection` instantiation is stubbed with TODO comments. This is the next piece to build:

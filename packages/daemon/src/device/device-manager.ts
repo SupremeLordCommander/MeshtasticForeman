@@ -5,6 +5,7 @@ import type { PGlite } from "@electric-sql/pglite";
 import type { ServerEvent, Message } from "@foreman/shared";
 import { MeshDevice, Types, Protobuf } from "@meshtastic/core";
 import { TransportNodeSerial } from "@meshtastic/transport-node-serial";
+import type { MqttGateway } from "../mqtt/gateway.js";
 
 export interface ConnectedDevice {
   id: string;
@@ -30,9 +31,14 @@ export class DeviceManager extends EventEmitter {
   private devices = new Map<string, ConnectedDevice>();
   /** Ports with a pending reconnect timer — prevents stacked reconnect loops */
   private reconnectingPorts = new Set<string>();
+  private mqttGateway: MqttGateway | null = null;
 
   constructor(private readonly db: PGlite) {
     super();
+  }
+
+  setMqttGateway(gateway: MqttGateway): void {
+    this.mqttGateway = gateway;
   }
 
   /** Reconnect all devices that were saved in the DB from a previous run. */
@@ -121,6 +127,9 @@ export class DeviceManager extends EventEmitter {
       );
     });
 
+    // Attach to MQTT gateway BEFORE configure so it catches onMyNodeInfo/onChannelPacket
+    this.mqttGateway?.attachDevice(id, meshDevice);
+
     // Send configure request — device will begin streaming its config back
     await meshDevice.configure();
 
@@ -135,6 +144,7 @@ export class DeviceManager extends EventEmitter {
     if (!device) return;
 
     this.devices.delete(deviceId);
+    this.mqttGateway?.detachDevice(deviceId);
     await device.transport.disconnect().catch(() => {});
 
     this._emitStatus(deviceId, device.name, device.port, "disconnected");

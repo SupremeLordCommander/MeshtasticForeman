@@ -1,0 +1,4 @@
+meshtastic>=2.0.0
+paho-mqtt>=1.6.0
+cryptography>=41.0.0
+python-dotenv>=1.0.0

@@ -1,0 +1,1 @@
+all user defined variables will be held in root .env file.
