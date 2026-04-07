@@ -59,6 +59,7 @@ interface DeviceState {
   cachedUser: Protobuf.Mesh.User | null;
   cachedPosition: Protobuf.Mesh.Position | null;
   selfAnnounceTimer: NodeJS.Timeout | null;
+  announceScheduled: boolean;              // prevents duplicate announce timers
 }
 
 // ---------------------------------------------------------------------------
@@ -133,15 +134,34 @@ export class MqttGateway {
       cachedUser: null,
       cachedPosition: null,
       selfAnnounceTimer: null,
+      announceScheduled: false,
     };
     this.devices.set(deviceId, state);
+
+    // Schedule a single self-announce once we have both nodeNum and channels.
+    // Called after every piece of config arrives — safe to call repeatedly.
+    const scheduleAnnounceIfReady = () => {
+      if (state.announceScheduled) return;
+      if (state.nodeNum === 0 || state.channels.size === 0) return;
+      state.announceScheduled = true;
+      console.log(`[mqtt] device ${deviceId} ready (${state.gatewayId}), announcing in 2s`);
+      setTimeout(() => {
+        this._publishSelf(deviceId).catch(console.error);
+        if (!state.selfAnnounceTimer) {
+          state.selfAnnounceTimer = setInterval(() => {
+            this._publishSelf(deviceId).catch(console.error);
+          }, this.cfg.selfAnnounceInterval);
+        }
+      }, 2000);
+    };
 
     // Our own node number — arrives early in the configure handshake
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     meshDevice.events.onMyNodeInfo.subscribe((info: any) => {
       state.nodeNum = info.myNodeNum;
       state.gatewayId = `!${info.myNodeNum.toString(16).padStart(8, "0")}`;
-      console.log(`[mqtt] device ${deviceId} gateway id = ${state.gatewayId}`);
+      console.log(`[mqtt] device ${deviceId} nodeNum = ${state.gatewayId}`);
+      scheduleAnnounceIfReady();
     });
 
     // Channel config — needed for channel name and PSK
@@ -152,6 +172,8 @@ export class MqttGateway {
       const rawPsk = ch.settings?.psk;
       const key = rawPsk ? this._expandPsk(rawPsk) : DEFAULT_KEY;
       state.channels.set(idx, { name, key });
+      console.log(`[mqtt] device ${deviceId} channel ${idx} = "${name}"`);
+      scheduleAnnounceIfReady();
     });
 
     // Cache our own user info for self-announce
@@ -178,17 +200,13 @@ export class MqttGateway {
       );
     });
 
-    // When device finishes configuring, announce ourselves and start the timer
+    // DeviceConfigured is a fallback trigger in case onMyNodeInfo/onChannelPacket
+    // fire after this event (ordering varies by firmware version)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     meshDevice.events.onDeviceStatus.subscribe((status: any) => {
+      console.log(`[mqtt] device ${deviceId} status = ${Types.DeviceStatusEnum[status] ?? status}`);
       if (status === Types.DeviceStatusEnum.DeviceConfigured) {
-        // Small delay to allow all channel/nodeinfo packets to land first
-        setTimeout(() => {
-          this._publishSelf(deviceId).catch(console.error);
-          state.selfAnnounceTimer = setInterval(() => {
-            this._publishSelf(deviceId).catch(console.error);
-          }, this.cfg.selfAnnounceInterval);
-        }, 2000);
+        scheduleAnnounceIfReady();
       }
     });
   }
