@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s http://192.168.229.29:3750/api/projects)",
+      "Bash(python -m json.tool)",
+      "Read(//d/Projects/GitHub/meshtastic_web/packages/web/src/**)",
+      "Bash(grep -E \"\\(tsx|jsx\\)$\")",
+      "Read(//d/Projects/GitHub/meshtastic_web/**)"
+    ]
+  }
+}

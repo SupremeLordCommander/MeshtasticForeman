@@ -59,10 +59,18 @@ export const requestHistorySchema = z.object({
   }),
 });
 
+export const requestNodeListSchema = z.object({
+  type: z.literal("nodes:request-list"),
+  payload: z.object({
+    deviceId: z.string().uuid(),
+  }),
+});
+
 export const clientCommandSchema = z.discriminatedUnion("type", [
   sendMessageSchema,
   subscribePacketsSchema,
   requestHistorySchema,
+  requestNodeListSchema,
 ]);
 
 export type ClientCommand = z.infer<typeof clientCommandSchema>;

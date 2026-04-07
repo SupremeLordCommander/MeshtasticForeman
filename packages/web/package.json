@@ -11,8 +11,10 @@
   },
   "dependencies": {
     "@foreman/shared": "workspace:*",
+    "maplibre-gl": "^5.22.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "react-map-gl": "^8.1.0",
     "zod": "^3.24.0"
   },
   "devDependencies": {
