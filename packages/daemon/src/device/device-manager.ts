@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import { Buffer } from "node:buffer";
 import type { PGlite } from "@electric-sql/pglite";
-import type { ServerEvent, Message } from "@foreman/shared";
+import type { ServerEvent, Message, NodeInfo } from "@foreman/shared";
 import { MeshDevice, Types, Protobuf } from "@meshtastic/core";
 import { TransportNodeSerial } from "@meshtastic/transport-node-serial";
 import type { MqttGateway } from "../mqtt/gateway.js";
@@ -71,9 +71,23 @@ export class DeviceManager extends EventEmitter {
       if (dev.port === port) return dev;
     }
 
-    const id = existingId ?? randomUUID();
+    // Reuse existing DB row for this port if one exists, to avoid accumulating duplicates
+    let id = existingId;
+    if (!id) {
+      const { rows } = await this.db.query<{ id: string }>(
+        "SELECT id FROM devices WHERE port = $1 ORDER BY created_at LIMIT 1",
+        [port]
+      );
+      id = rows[0]?.id ?? randomUUID();
+    }
 
-    // Upsert device record
+    // Delete any duplicate rows for this port that aren't the canonical id
+    await this.db.query(
+      "DELETE FROM devices WHERE port = $1 AND id != $2",
+      [port, id]
+    );
+
+    // Upsert canonical row
     await this.db.query(
       `INSERT INTO devices(id, name, port)
        VALUES ($1, $2, $3)
@@ -153,6 +167,42 @@ export class DeviceManager extends EventEmitter {
 
   getDevice(id: string) {
     return this.devices.get(id);
+  }
+
+  async listNodes(deviceId: string): Promise<NodeInfo[]> {
+    const { rows } = await this.db.query<{
+      node_id: number;
+      long_name: string | null;
+      short_name: string | null;
+      mac_address: string | null;
+      hw_model: number | null;
+      public_key: string | null;
+      last_heard: string | null;
+      snr: number | null;
+      hops_away: number | null;
+      latitude: number | null;
+      longitude: number | null;
+      altitude: number | null;
+    }>(
+      `SELECT node_id, long_name, short_name, mac_address, hw_model, public_key,
+              last_heard, snr, hops_away, latitude, longitude, altitude
+       FROM nodes WHERE device_id = $1 ORDER BY last_heard DESC NULLS LAST`,
+      [deviceId]
+    );
+    return rows.map((r) => ({
+      nodeId: r.node_id,
+      longName: r.long_name,
+      shortName: r.short_name,
+      macAddress: r.mac_address,
+      hwModel: r.hw_model,
+      publicKey: r.public_key,
+      lastHeard: r.last_heard,
+      snr: r.snr,
+      hopsAway: r.hops_away,
+      latitude: r.latitude,
+      longitude: r.longitude,
+      altitude: r.altitude,
+    }));
   }
 
   async getMessageHistory(
@@ -325,6 +375,43 @@ export class DeviceManager extends EventEmitter {
       payloadRaw = Buffer.from(p.payloadVariant.value.payload).toString("base64");
     } else if (isEncrypted && p.payloadVariant.value instanceof Uint8Array) {
       payloadRaw = Buffer.from(p.payloadVariant.value).toString("base64");
+    }
+
+    // Keep node last_heard fresh on every received packet, not just nodeinfo
+    const fromNodeId: number = p.from ?? 0;
+    if (fromNodeId !== 0) {
+      const updateResult = await this.db.query(
+        `UPDATE nodes SET last_heard = $1
+         WHERE device_id = $2 AND node_id = $3 AND (last_heard IS NULL OR last_heard < $1)`,
+        [rxTime, deviceId, fromNodeId]
+      );
+      // Emit node:update so frontend timestamp refreshes live
+      if ((updateResult.affectedRows ?? updateResult.rows?.length ?? 1) >= 0) {
+        const { rows } = await this.db.query<{
+          node_id: number; long_name: string | null; short_name: string | null;
+          mac_address: string | null; hw_model: number | null; public_key: string | null;
+          snr: number | null; hops_away: number | null;
+          latitude: number | null; longitude: number | null; altitude: number | null;
+        }>(
+          `SELECT node_id, long_name, short_name, mac_address, hw_model, public_key,
+                  snr, hops_away, latitude, longitude, altitude
+           FROM nodes WHERE device_id = $1 AND node_id = $2`,
+          [deviceId, fromNodeId]
+        );
+        if (rows[0]) {
+          const r = rows[0];
+          const nodeEvent: ServerEvent = {
+            type: "node:update",
+            payload: {
+              nodeId: r.node_id, longName: r.long_name, shortName: r.short_name,
+              macAddress: r.mac_address, hwModel: r.hw_model, publicKey: r.public_key,
+              lastHeard: rxTime, snr: r.snr, hopsAway: r.hops_away,
+              latitude: r.latitude, longitude: r.longitude, altitude: r.altitude,
+            },
+          };
+          this.emit("event", nodeEvent);
+        }
+      }
     }
 
     const id = randomUUID();

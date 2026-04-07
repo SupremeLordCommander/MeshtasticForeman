@@ -37,8 +37,8 @@ export async function registerWsRoute(
     console.log(`[ws] client connected (total=${clients.size})`);
 
     // Send current state snapshot on connect
-    deviceManager.listDevices().then((devices) => {
-      const event: ServerEvent = {
+    deviceManager.listDevices().then(async (devices) => {
+      const deviceListEvent: ServerEvent = {
         type: "device:list",
         payload: devices.map((d) => ({
           id: d.id,
@@ -51,7 +51,15 @@ export async function registerWsRoute(
           firmwareVersion: d.firmware ?? null,
         })),
       };
-      socket.send(JSON.stringify(event));
+      socket.send(JSON.stringify(deviceListEvent));
+
+      // Send all known nodes for each connected device
+      for (const d of devices) {
+        const nodes = await deviceManager.listNodes(d.id);
+        if (nodes.length === 0) continue;
+        const nodeListEvent: ServerEvent = { type: "node:list", payload: nodes };
+        socket.send(JSON.stringify(nodeListEvent));
+      }
     });
 
     socket.on("message", (raw: RawData) => {
@@ -129,6 +137,23 @@ async function handleClientCommand(
         packetSubscriptions.delete(socket);
       }
       console.log(`[ws] packets:subscribe → ${device.name}, enabled=${command.payload.enabled}`);
+      break;
+    }
+
+    case "nodes:request-list": {
+      const { deviceId } = command.payload;
+      const device = deviceManager.getDevice(deviceId);
+      if (!device) {
+        socket.send(JSON.stringify({
+          type: "error",
+          payload: { code: "DEVICE_NOT_FOUND", message: `No device with id ${deviceId}` },
+        }));
+        return;
+      }
+      const nodes = await deviceManager.listNodes(deviceId);
+      const event: ServerEvent = { type: "node:list", payload: nodes };
+      socket.send(JSON.stringify(event));
+      console.log(`[ws] nodes:request-list → ${device.name}, returned ${nodes.length} nodes`);
       break;
     }
 

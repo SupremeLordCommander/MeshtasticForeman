@@ -25,6 +25,12 @@ export async function registerDeviceRoutes(
     return device;
   });
 
+  app.get("/api/devices/:id/nodes", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const nodes = await deviceManager.listNodes(id);
+    return nodes;
+  });
+
   app.delete("/api/devices/:id", async (req, reply) => {
     const { id } = req.params as { id: string };
     await deviceManager.disconnect(id);
