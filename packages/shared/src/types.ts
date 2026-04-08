@@ -99,3 +99,12 @@ export interface Waypoint {
   lockedTo: number | null;
   expire: string | null;
 }
+
+export interface NodeOverride {
+  nodeId: number;
+  aliasName: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  altitude: number | null;
+  notes: string | null;
+}

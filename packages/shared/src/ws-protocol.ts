@@ -27,6 +27,7 @@ export type ServerEvent =
   | { type: "mqtt_node:update"; payload: MqttNode }
   | { type: "mqtt_node:list"; payload: MqttNode[] }
   | { type: "traceroute:result"; payload: { nodeId: number; route: number[]; routeBack: number[] } }
+  | { type: "node:removed"; payload: { nodeId: number } }
   | { type: "error"; payload: { code: string; message: string } };
 
 // ---------------------------------------------------------------------------
@@ -91,6 +92,14 @@ export const requestTracerouteSchema = z.object({
   }),
 });
 
+export const removeNodeSchema = z.object({
+  type: z.literal("node:remove"),
+  payload: z.object({
+    deviceId: z.string().uuid(),
+    nodeId: z.number().int(),
+  }),
+});
+
 export const clientCommandSchema = z.discriminatedUnion("type", [
   sendMessageSchema,
   subscribePacketsSchema,
@@ -99,6 +108,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   requestMqttNodeListSchema,
   requestPositionSchema,
   requestTracerouteSchema,
+  removeNodeSchema,
 ]);
 
 export type ClientCommand = z.infer<typeof clientCommandSchema>;

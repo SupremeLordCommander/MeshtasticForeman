@@ -128,6 +128,20 @@ const migrations: string[] = [
   `
   DELETE FROM mqtt_nodes WHERE region_path IS NULL;
   `,
+
+  /* 005 – node_overrides: local fallback names and positions for nodes that
+            never broadcast their own location (e.g. government relays).
+            Display-only — never written back to the mesh or MQTT. */
+  `
+  CREATE TABLE IF NOT EXISTS node_overrides (
+    node_id    BIGINT PRIMARY KEY,
+    alias_name TEXT,
+    latitude   DOUBLE PRECISION,
+    longitude  DOUBLE PRECISION,
+    altitude   INT,
+    notes      TEXT
+  );
+  `,
 ];
 
 export async function runMigrations(db: PGlite) {

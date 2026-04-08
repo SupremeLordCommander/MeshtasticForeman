@@ -40,15 +40,24 @@ interface Props {
 }
 
 export function NodesPage({ devices, nodes }: Props) {
-  const [pending, setPending] = useState<Record<string, "position" | "traceroute">>({});
+  const [pending, setPending] = useState<Record<string, "position" | "traceroute" | "remove">>({});
   const [traceroutes, setTraceroutes] = useState<Record<number, TracerouteResult>>({});
+  const [confirmRemove, setConfirmRemove] = useState<number | null>(null);
 
-  // Listen for traceroute results from the daemon
+  // Listen for traceroute results and node removal confirmations from the daemon
   useEffect(() => {
     const off = foremanClient.on((event) => {
       if (event.type === "traceroute:result") {
         const { nodeId, route, routeBack } = event.payload;
         setTraceroutes((prev) => ({ ...prev, [nodeId]: { route, routeBack } }));
+        setPending((prev) => {
+          const next = { ...prev };
+          delete next[String(nodeId)];
+          return next;
+        });
+      }
+      if (event.type === "node:removed") {
+        const { nodeId } = event.payload;
         setPending((prev) => {
           const next = { ...prev };
           delete next[String(nodeId)];
@@ -86,6 +95,19 @@ export function NodesPage({ devices, nodes }: Props) {
     if (!deviceId) return;
     setPending((prev) => ({ ...prev, [String(nodeId)]: "traceroute" }));
     foremanClient.send({ type: "node:traceroute", payload: { deviceId, nodeId } });
+  }
+
+  function removeNode(nodeId: number) {
+    if (!deviceId) return;
+    setConfirmRemove(null);
+    setPending((prev) => ({ ...prev, [String(nodeId)]: "remove" }));
+    foremanClient.send({ type: "node:remove", payload: { deviceId, nodeId } });
+    // Timeout fallback in case daemon never replies
+    setTimeout(() => setPending((prev) => {
+      const next = { ...prev };
+      delete next[String(nodeId)];
+      return next;
+    }), 10000);
   }
 
   return (
@@ -176,6 +198,31 @@ export function NodesPage({ devices, nodes }: Props) {
                             >
                               {pending[key] === "traceroute" ? "…" : "🔍 Trace"}
                             </button>
+                            {confirmRemove === n.nodeId ? (
+                              <>
+                                <button
+                                  style={{ ...styles.actionBtn, marginLeft: "0.4rem", color: "#f87171", borderColor: "#7f1d1d" }}
+                                  onClick={() => removeNode(n.nodeId)}
+                                >
+                                  Confirm
+                                </button>
+                                <button
+                                  style={{ ...styles.actionBtn, marginLeft: "0.25rem" }}
+                                  onClick={() => setConfirmRemove(null)}
+                                >
+                                  Cancel
+                                </button>
+                              </>
+                            ) : (
+                              <button
+                                style={{ ...styles.actionBtn, marginLeft: "0.4rem" }}
+                                disabled={isPending}
+                                onClick={() => setConfirmRemove(n.nodeId)}
+                                title="Remove this node from the radio's nodeDB and clear local cache — it will re-appear when next heard"
+                              >
+                                {pending[key] === "remove" ? "…" : "Reset"}
+                              </button>
+                            )}
                           </td>
                         )}
                       </tr>

@@ -66,8 +66,8 @@ async function main() {
   }
 
   // 4. Routes
-  await registerDeviceRoutes(app, deviceManager, mqttGateway);
-  await registerWsRoute(app, deviceManager, mqttGateway);
+  await registerDeviceRoutes(app, deviceManager, mqttGateway, db);
+  await registerWsRoute(app, deviceManager, mqttGateway, db);
 
   // Fallback to index.html for SPA routing
   app.setNotFoundHandler((_req, reply) => {
