@@ -142,6 +142,11 @@ const migrations: string[] = [
     notes      TEXT
   );
   `,
+
+  /* 006 – distance_m: haversine distance in meters from our gateway to each node */
+  `
+  ALTER TABLE mqtt_nodes ADD COLUMN IF NOT EXISTS distance_m DOUBLE PRECISION;
+  `,
 ];
 
 export async function runMigrations(db: PGlite) {
