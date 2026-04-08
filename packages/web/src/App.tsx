@@ -3,12 +3,10 @@ import { foremanClient } from "./ws/client.js";
 import type { DeviceInfo, NodeInfo, MqttNode, NodeOverride } from "@foreman/shared";
 import { NodesPage } from "./pages/NodesPage.js";
 import { MapPage } from "./pages/MapPage.js";
-import { RegionMapPage } from "./pages/RegionMapPage.js";
-import { MqttNodesPage } from "./pages/MqttNodesPage.js";
 import { NodeOverridesPage } from "./pages/NodeOverridesPage.js";
 import logo from "./assets/logo.png";
 
-type Tab = "nodes" | "map" | "region" | "mqtt" | "overrides";
+type Tab = "nodes" | "map" | "overrides";
 
 /** Apply fallback lat/lon/altitude from overrides when the node has no GPS data. */
 function applyNodeOverrides<T extends { nodeId: number; latitude: number | null; longitude: number | null; altitude: number | null; longName?: string | null; shortName?: string | null }>(
@@ -138,12 +136,6 @@ export function App() {
         <nav style={styles.nav}>
           <button style={tabStyle(tab === "nodes")} onClick={() => setTab("nodes")}>Nodes</button>
           <button style={tabStyle(tab === "map")} onClick={() => setTab("map")}>Map</button>
-          <button style={tabStyle(tab === "region")} onClick={() => setTab("region")}>
-            Region {mqttNodes.length > 0 && <span style={styles.tabCount}>{mqttNodes.length}</span>}
-          </button>
-          <button style={tabStyle(tab === "mqtt")} onClick={() => setTab("mqtt")}>
-            MQTT Nodes {mqttNodes.length > 0 && <span style={styles.tabCount}>{mqttNodes.length}</span>}
-          </button>
           <button style={tabStyle(tab === "overrides")} onClick={() => setTab("overrides")}>
             Overrides {overrides.size > 0 && <span style={styles.tabCount}>{overrides.size}</span>}
           </button>
@@ -155,16 +147,10 @@ export function App() {
 
       {tab === "nodes" && (
         <div style={{ flex: 1, overflowY: "auto" }}>
-          <NodesPage devices={devices} nodes={effectiveNodes} />
+          <NodesPage devices={devices} nodes={effectiveNodes} mqttNodes={effectiveMqttNodes} />
         </div>
       )}
-      {tab === "map" && <MapPage nodes={effectiveNodes} />}
-      {tab === "region" && <RegionMapPage nodes={effectiveMqttNodes} />}
-      {tab === "mqtt" && (
-        <div style={{ flex: 1, overflowY: "auto" }}>
-          <MqttNodesPage nodes={effectiveMqttNodes} />
-        </div>
-      )}
+      {tab === "map" && <MapPage nodes={effectiveNodes} mqttNodes={effectiveMqttNodes} />}
       {tab === "overrides" && (
         <div style={{ flex: 1, overflowY: "auto" }}>
           <NodeOverridesPage

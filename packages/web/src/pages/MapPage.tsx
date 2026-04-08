@@ -1,9 +1,8 @@
 import { useState, useCallback } from "react";
 import Map, { Marker, Popup, NavigationControl } from "react-map-gl/maplibre";
 import "maplibre-gl/dist/maplibre-gl.css";
-import type { NodeInfo } from "@foreman/shared";
+import type { NodeInfo, MqttNode } from "@foreman/shared";
 
-// OpenFreeMap — free, reliable, no API key required
 const MAP_STYLE = "https://tiles.openfreemap.org/styles/liberty";
 
 const HW_MODEL: Record<number, string> = {
@@ -26,42 +25,59 @@ function formatLastHeard(iso: string | null): string {
   return `${Math.floor(diff / 86400)}d ago`;
 }
 
-// Deterministic color from nodeId — matches the sister project's approach
 function nodeColor(nodeId: number): string {
   const hue = (nodeId * 137.508) % 360;
   return `hsl(${hue}, 70%, 55%)`;
 }
 
+type SelectedNode =
+  | { source: "mesh"; node: NodeInfo }
+  | { source: "mqtt"; node: MqttNode };
+
 interface Props {
   nodes: NodeInfo[];
+  mqttNodes: MqttNode[];
 }
 
-export function MapPage({ nodes }: Props) {
-  const [selected, setSelected] = useState<NodeInfo | null>(null);
+export function MapPage({ nodes, mqttNodes }: Props) {
+  const [showMesh, setShowMesh] = useState(true);
+  const [showMqtt, setShowMqtt] = useState(true);
+  const [selected, setSelected] = useState<SelectedNode | null>(null);
 
-  const mappableNodes = nodes.filter(
-    (n) => n.latitude != null && n.longitude != null
-  );
+  const mappableMesh = nodes.filter((n) => n.latitude != null && n.longitude != null);
+  const mappableMqtt = mqttNodes.filter((n) => n.latitude != null && n.longitude != null);
+  const allMappable = [...mappableMesh, ...mappableMqtt];
 
-  // Default center: first node with GPS, or fallback to US center
-  const firstNode = mappableNodes[0];
+  const firstNode = allMappable[0];
   const initialView = {
     longitude: firstNode?.longitude ?? -98.5,
     latitude: firstNode?.latitude ?? 39.5,
     zoom: firstNode ? 10 : 4,
   };
 
-  const handleMarkerClick = useCallback((node: NodeInfo) => {
-    setSelected((prev) => (prev?.nodeId === node.nodeId ? null : node));
+  const handleMeshClick = useCallback((node: NodeInfo) => {
+    setSelected((prev) =>
+      prev?.source === "mesh" && prev.node.nodeId === node.nodeId ? null : { source: "mesh", node }
+    );
   }, []);
+
+  const handleMqttClick = useCallback((node: MqttNode) => {
+    setSelected((prev) =>
+      prev?.source === "mqtt" && prev.node.nodeId === node.nodeId ? null : { source: "mqtt", node }
+    );
+  }, []);
+
+  const selectedLon =
+    selected?.source === "mesh" ? selected.node.longitude :
+    selected?.source === "mqtt" ? selected.node.longitude : null;
+  const selectedLat =
+    selected?.source === "mesh" ? selected.node.latitude :
+    selected?.source === "mqtt" ? selected.node.latitude : null;
 
   return (
     <div style={styles.wrap}>
-      {mappableNodes.length === 0 && (
-        <div style={styles.noGps}>No nodes with GPS data yet.</div>
-      )}
       <Map
-        key={mappableNodes.length > 0 ? "has-gps" : "no-gps"}
+        key={allMappable.length > 0 ? "has-gps" : "no-gps"}
         initialViewState={initialView}
         style={{ width: "100%", height: "100%" }}
         mapStyle={MAP_STYLE}
@@ -69,26 +85,21 @@ export function MapPage({ nodes }: Props) {
       >
         <NavigationControl position="top-right" />
 
-        {mappableNodes.map((node) => {
+        {/* Mesh node markers */}
+        {showMesh && mappableMesh.map((node) => {
           const isLocal = node.hopsAway === 0;
           const color = nodeColor(node.nodeId);
-
           return (
             <Marker
-              key={node.nodeId}
+              key={`mesh-${node.nodeId}`}
               longitude={node.longitude!}
               latitude={node.latitude!}
               anchor="center"
-              onClick={() => handleMarkerClick(node)}
+              onClick={() => handleMeshClick(node)}
             >
               <div
                 title={node.longName ?? nodeHex(node.nodeId)}
-                style={{
-                  ...styles.markerOuter,
-                  borderColor: color,
-                  boxShadow: `0 0 0 2px ${color}33`,
-                  cursor: "pointer",
-                }}
+                style={{ ...styles.markerOuter, borderColor: color, boxShadow: `0 0 0 2px ${color}33`, cursor: "pointer" }}
               >
                 <div
                   style={{
@@ -106,10 +117,38 @@ export function MapPage({ nodes }: Props) {
           );
         })}
 
-        {selected && selected.longitude != null && selected.latitude != null && (
+        {/* MQTT node markers — dashed border to distinguish from mesh */}
+        {showMqtt && mappableMqtt.map((node) => {
+          const color = nodeColor(node.nodeId);
+          return (
+            <Marker
+              key={`mqtt-${node.nodeId}`}
+              longitude={node.longitude!}
+              latitude={node.latitude!}
+              anchor="center"
+              onClick={() => handleMqttClick(node)}
+            >
+              <div
+                title={`[MQTT] ${node.longName ?? nodeHex(node.nodeId)}`}
+                style={{
+                  ...styles.markerInner,
+                  background: "#0f172a",
+                  color,
+                  border: `2px dashed ${color}`,
+                  boxShadow: `0 0 0 2px ${color}22`,
+                  cursor: "pointer",
+                }}
+              >
+                {(node.shortName ?? nodeHex(node.nodeId).slice(-4)).slice(0, 4)}
+              </div>
+            </Marker>
+          );
+        })}
+
+        {selected && selectedLon != null && selectedLat != null && (
           <Popup
-            longitude={selected.longitude}
-            latitude={selected.latitude}
+            longitude={selectedLon}
+            latitude={selectedLat}
             anchor="bottom"
             offset={20}
             closeButton={true}
@@ -117,89 +156,158 @@ export function MapPage({ nodes }: Props) {
             onClose={() => setSelected(null)}
             style={{ fontFamily: "monospace" }}
           >
-            <div style={styles.popup}>
-              <div style={styles.popupName}>
-                {selected.longName ?? nodeHex(selected.nodeId)}
-              </div>
-              {selected.shortName && selected.longName && (
-                <div style={styles.popupMuted}>{selected.shortName}</div>
-              )}
-              <div style={styles.popupGrid}>
-                <span style={styles.popupLabel}>ID</span>
-                <span style={styles.popupMono}>{nodeHex(selected.nodeId)}</span>
-
-                <span style={styles.popupLabel}>Last heard</span>
-                <span>{formatLastHeard(selected.lastHeard)}</span>
-
-                <span style={styles.popupLabel}>Hops</span>
-                <span>
-                  {selected.hopsAway === null
-                    ? "—"
-                    : selected.hopsAway === 0
-                    ? "Direct"
-                    : `${selected.hopsAway} away`}
-                </span>
-
-                {selected.snr != null && (
-                  <>
-                    <span style={styles.popupLabel}>SNR</span>
-                    <span>{selected.snr.toFixed(1)} dB</span>
-                  </>
-                )}
-
-                {selected.hwModel != null && (
-                  <>
-                    <span style={styles.popupLabel}>Model</span>
-                    <span>{HW_MODEL[selected.hwModel] ?? `#${selected.hwModel}`}</span>
-                  </>
-                )}
-
-                <span style={styles.popupLabel}>GPS</span>
-                <span style={styles.popupMono}>
-                  {selected.latitude!.toFixed(5)}, {selected.longitude!.toFixed(5)}
-                  {selected.altitude != null && ` (${selected.altitude}m)`}
-                </span>
-              </div>
-            </div>
+            {selected.source === "mesh" ? (
+              <MeshPopup node={selected.node} />
+            ) : (
+              <MqttPopup node={selected.node} />
+            )}
           </Popup>
         )}
       </Map>
 
+      {/* Filter toggles — top left */}
+      <div style={styles.filters}>
+        <button
+          style={filterBtnStyle(showMesh)}
+          onClick={() => { setShowMesh((v) => !v); if (selected?.source === "mesh") setSelected(null); }}
+        >
+          <span style={{ ...styles.filterDot, border: "2px solid #94a3b8", background: "#0f172a" }} />
+          Mesh {mappableMesh.length > 0 && <span style={styles.filterCount}>{mappableMesh.length}</span>}
+        </button>
+        <button
+          style={filterBtnStyle(showMqtt)}
+          onClick={() => { setShowMqtt((v) => !v); if (selected?.source === "mqtt") setSelected(null); }}
+        >
+          <span style={{ ...styles.filterDot, border: "2px dashed #94a3b8", background: "#0f172a" }} />
+          MQTT {mappableMqtt.length > 0 && <span style={styles.filterCount}>{mappableMqtt.length}</span>}
+        </button>
+      </div>
+
+      {/* Legend — bottom left */}
       <div style={styles.legend}>
         <span style={styles.legendItem}>
           <span style={{ ...styles.legendDot, background: "#3b82f6", border: "2px solid #3b82f6" }} />
-          Local device
+          Local / direct
         </span>
         <span style={styles.legendItem}>
           <span style={{ ...styles.legendDot, background: "#0f172a", border: "2px solid #94a3b8" }} />
-          Remote node
+          Mesh
+        </span>
+        <span style={styles.legendItem}>
+          <span style={{ ...styles.legendDot, background: "#0f172a", border: "2px dashed #94a3b8" }} />
+          MQTT
         </span>
         <span style={{ color: "#64748b" }}>
-          {mappableNodes.length} / {nodes.length} nodes have GPS
+          {mappableMesh.length + mappableMqtt.length} / {nodes.length + mqttNodes.length} with GPS
         </span>
       </div>
     </div>
   );
 }
 
+function MeshPopup({ node }: { node: NodeInfo }) {
+  return (
+    <div style={popupStyles.popup}>
+      <div style={popupStyles.name}>{node.longName ?? nodeHex(node.nodeId)}</div>
+      {node.shortName && node.longName && <div style={popupStyles.muted}>{node.shortName}</div>}
+      <div style={popupStyles.grid}>
+        <span style={popupStyles.label}>ID</span>
+        <span style={popupStyles.mono}>{nodeHex(node.nodeId)}</span>
+
+        <span style={popupStyles.label}>Last heard</span>
+        <span>{formatLastHeard(node.lastHeard)}</span>
+
+        <span style={popupStyles.label}>Hops</span>
+        <span>
+          {node.hopsAway === null ? "—" : node.hopsAway === 0 ? "Direct" : `${node.hopsAway} away`}
+        </span>
+
+        {node.snr != null && (
+          <>
+            <span style={popupStyles.label}>SNR</span>
+            <span>{node.snr.toFixed(1)} dB</span>
+          </>
+        )}
+
+        {node.hwModel != null && (
+          <>
+            <span style={popupStyles.label}>Model</span>
+            <span>{HW_MODEL[node.hwModel] ?? `#${node.hwModel}`}</span>
+          </>
+        )}
+
+        <span style={popupStyles.label}>GPS</span>
+        <span style={popupStyles.mono}>
+          {node.latitude!.toFixed(5)}, {node.longitude!.toFixed(5)}
+          {node.altitude != null && ` (${node.altitude}m)`}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function MqttPopup({ node }: { node: MqttNode }) {
+  return (
+    <div style={popupStyles.popup}>
+      <div style={popupStyles.name}>{node.longName ?? nodeHex(node.nodeId)}</div>
+      {node.shortName && node.longName && <div style={popupStyles.muted}>{node.shortName}</div>}
+      <div style={popupStyles.tag}>MQTT</div>
+      <div style={popupStyles.grid}>
+        <span style={popupStyles.label}>ID</span>
+        <span style={popupStyles.mono}>{nodeHex(node.nodeId)}</span>
+
+        <span style={popupStyles.label}>Last heard</span>
+        <span>{formatLastHeard(node.lastHeard)}</span>
+
+        <span style={popupStyles.label}>Gateway</span>
+        <span style={popupStyles.mono}>{node.lastGateway ?? "—"}</span>
+
+        {node.snr != null && (
+          <>
+            <span style={popupStyles.label}>SNR</span>
+            <span>{node.snr.toFixed(1)} dB</span>
+          </>
+        )}
+
+        {node.hwModel != null && (
+          <>
+            <span style={popupStyles.label}>Model</span>
+            <span>{HW_MODEL[node.hwModel] ?? `#${node.hwModel}`}</span>
+          </>
+        )}
+
+        <span style={popupStyles.label}>GPS</span>
+        <span style={popupStyles.mono}>
+          {node.latitude!.toFixed(5)}, {node.longitude!.toFixed(5)}
+          {node.altitude != null && ` (${node.altitude}m)`}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function filterBtnStyle(active: boolean): React.CSSProperties {
+  return {
+    display: "flex",
+    alignItems: "center",
+    gap: "0.4rem",
+    background: active ? "#1e3a5f" : "#0f172a",
+    border: `1px solid ${active ? "#3b82f6" : "#334155"}`,
+    color: active ? "#e2e8f0" : "#64748b",
+    padding: "0.3rem 0.65rem",
+    borderRadius: "0.375rem",
+    cursor: "pointer",
+    fontSize: "0.75rem",
+    fontFamily: "monospace",
+  };
+}
+
 const styles: Record<string, React.CSSProperties> = {
   wrap: {
     flex: 1,
     position: "relative",
-    minHeight: 0,        // required for flex children to shrink below content size
+    minHeight: 0,
     overflow: "hidden",
-  },
-  noGps: {
-    position: "absolute",
-    top: "1rem",
-    left: "50%",
-    transform: "translateX(-50%)",
-    background: "#1e293b",
-    color: "#94a3b8",
-    padding: "0.5rem 1rem",
-    borderRadius: "0.5rem",
-    fontSize: "0.875rem",
-    zIndex: 10,
   },
   markerOuter: {
     position: "relative",
@@ -224,33 +332,27 @@ const styles: Record<string, React.CSSProperties> = {
     border: "2px dashed #22c55e",
     pointerEvents: "none",
   },
-  popup: {
-    minWidth: "180px",
-    fontSize: "0.8rem",
-    color: "#1e293b",
+  filters: {
+    position: "absolute",
+    top: "0.75rem",
+    left: "0.75rem",
+    zIndex: 10,
+    display: "flex",
+    gap: "0.4rem",
   },
-  popupName: {
-    fontWeight: "bold",
-    fontSize: "0.9rem",
-    marginBottom: "0.1rem",
+  filterDot: {
+    width: "0.7rem",
+    height: "0.7rem",
+    borderRadius: "50%",
+    display: "inline-block",
+    flexShrink: 0,
   },
-  popupMuted: {
-    color: "#64748b",
-    marginBottom: "0.5rem",
-  },
-  popupGrid: {
-    display: "grid",
-    gridTemplateColumns: "auto 1fr",
-    gap: "0.2rem 0.75rem",
-    alignItems: "baseline",
-  },
-  popupLabel: {
-    color: "#64748b",
-    fontSize: "0.75rem",
-  },
-  popupMono: {
-    fontFamily: "monospace",
-    fontSize: "0.75rem",
+  filterCount: {
+    background: "#334155",
+    borderRadius: "9999px",
+    padding: "0 0.3rem",
+    fontSize: "0.65rem",
+    marginLeft: "0.15rem",
   },
   legend: {
     position: "absolute",
@@ -278,4 +380,28 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: "50%",
     display: "inline-block",
   },
+};
+
+const popupStyles: Record<string, React.CSSProperties> = {
+  popup: { minWidth: "180px", fontSize: "0.8rem", color: "#1e293b" },
+  name: { fontWeight: "bold", fontSize: "0.9rem", marginBottom: "0.1rem" },
+  muted: { color: "#64748b", marginBottom: "0.25rem" },
+  tag: {
+    display: "inline-block",
+    background: "#dbeafe",
+    color: "#1d4ed8",
+    borderRadius: "0.25rem",
+    padding: "0 0.35rem",
+    fontSize: "0.65rem",
+    fontWeight: "bold",
+    marginBottom: "0.4rem",
+  },
+  grid: {
+    display: "grid",
+    gridTemplateColumns: "auto 1fr",
+    gap: "0.2rem 0.75rem",
+    alignItems: "baseline",
+  },
+  label: { color: "#64748b", fontSize: "0.75rem" },
+  mono: { fontFamily: "monospace", fontSize: "0.75rem" },
 };
