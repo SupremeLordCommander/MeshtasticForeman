@@ -2,6 +2,7 @@ import { z } from "zod";
 import type {
   DeviceInfo,
   NodeInfo,
+  MqttNode,
   Message,
   Packet,
   Channel,
@@ -23,6 +24,9 @@ export type ServerEvent =
   | { type: "channel:list"; payload: Channel[] }
   | { type: "waypoint:update"; payload: Waypoint }
   | { type: "waypoint:list"; payload: Waypoint[] }
+  | { type: "mqtt_node:update"; payload: MqttNode }
+  | { type: "mqtt_node:list"; payload: MqttNode[] }
+  | { type: "traceroute:result"; payload: { nodeId: number; route: number[]; routeBack: number[] } }
   | { type: "error"; payload: { code: string; message: string } };
 
 // ---------------------------------------------------------------------------
@@ -66,11 +70,35 @@ export const requestNodeListSchema = z.object({
   }),
 });
 
+export const requestMqttNodeListSchema = z.object({
+  type: z.literal("mqtt_nodes:request-list"),
+  payload: z.object({}),
+});
+
+export const requestPositionSchema = z.object({
+  type: z.literal("node:request-position"),
+  payload: z.object({
+    deviceId: z.string().uuid(),
+    nodeId: z.number().int(),
+  }),
+});
+
+export const requestTracerouteSchema = z.object({
+  type: z.literal("node:traceroute"),
+  payload: z.object({
+    deviceId: z.string().uuid(),
+    nodeId: z.number().int(),
+  }),
+});
+
 export const clientCommandSchema = z.discriminatedUnion("type", [
   sendMessageSchema,
   subscribePacketsSchema,
   requestHistorySchema,
   requestNodeListSchema,
+  requestMqttNodeListSchema,
+  requestPositionSchema,
+  requestTracerouteSchema,
 ]);
 
 export type ClientCommand = z.infer<typeof clientCommandSchema>;

@@ -1,9 +1,8 @@
 import { useState, useCallback } from "react";
 import Map, { Marker, Popup, NavigationControl } from "react-map-gl/maplibre";
 import "maplibre-gl/dist/maplibre-gl.css";
-import type { NodeInfo } from "@foreman/shared";
+import type { MqttNode } from "@foreman/shared";
 
-// OpenFreeMap — free, reliable, no API key required
 const MAP_STYLE = "https://tiles.openfreemap.org/styles/liberty";
 
 const HW_MODEL: Record<number, string> = {
@@ -26,42 +25,50 @@ function formatLastHeard(iso: string | null): string {
   return `${Math.floor(diff / 86400)}d ago`;
 }
 
-// Deterministic color from nodeId — matches the sister project's approach
 function nodeColor(nodeId: number): string {
   const hue = (nodeId * 137.508) % 360;
   return `hsl(${hue}, 70%, 55%)`;
 }
 
 interface Props {
-  nodes: NodeInfo[];
+  nodes: MqttNode[];
 }
 
-export function MapPage({ nodes }: Props) {
-  const [selected, setSelected] = useState<NodeInfo | null>(null);
+export function RegionMapPage({ nodes }: Props) {
+  const [selected, setSelected] = useState<MqttNode | null>(null);
 
-  const mappableNodes = nodes.filter(
-    (n) => n.latitude != null && n.longitude != null
-  );
+  const mappable = nodes.filter((n) => n.latitude != null && n.longitude != null);
 
-  // Default center: first node with GPS, or fallback to US center
-  const firstNode = mappableNodes[0];
+  const firstNode = mappable[0];
   const initialView = {
-    longitude: firstNode?.longitude ?? -98.5,
-    latitude: firstNode?.latitude ?? 39.5,
-    zoom: firstNode ? 10 : 4,
+    longitude: firstNode?.longitude ?? -124.1,
+    latitude:  firstNode?.latitude  ??  40.8,
+    zoom: firstNode ? 10 : 9,
   };
 
-  const handleMarkerClick = useCallback((node: NodeInfo) => {
+  const handleClick = useCallback((node: MqttNode) => {
     setSelected((prev) => (prev?.nodeId === node.nodeId ? null : node));
   }, []);
 
   return (
     <div style={styles.wrap}>
-      {mappableNodes.length === 0 && (
-        <div style={styles.noGps}>No nodes with GPS data yet.</div>
-      )}
+      <div style={styles.statsBar}>
+        <span style={styles.stat}>
+          <strong>{nodes.length}</strong> nodes via MQTT
+        </span>
+        <span style={styles.stat}>
+          <strong>{mappable.length}</strong> with GPS
+        </span>
+        {nodes.length === 0 && (
+          <span style={styles.warning}>Waiting for MQTT data — may take a minute after startup</span>
+        )}
+        {nodes.length > 0 && mappable.length === 0 && (
+          <span style={styles.warning}>Nodes seen but no GPS yet — position packets arrive infrequently</span>
+        )}
+      </div>
+
       <Map
-        key={mappableNodes.length > 0 ? "has-gps" : "no-gps"}
+        key={mappable.length > 0 ? "has-gps" : "no-gps"}
         initialViewState={initialView}
         style={{ width: "100%", height: "100%" }}
         mapStyle={MAP_STYLE}
@@ -69,38 +76,37 @@ export function MapPage({ nodes }: Props) {
       >
         <NavigationControl position="top-right" />
 
-        {mappableNodes.map((node) => {
-          const isLocal = node.hopsAway === 0;
+        {mappable.map((node) => {
           const color = nodeColor(node.nodeId);
-
           return (
             <Marker
               key={node.nodeId}
               longitude={node.longitude!}
               latitude={node.latitude!}
               anchor="center"
-              onClick={() => handleMarkerClick(node)}
+              onClick={() => handleClick(node)}
             >
               <div
                 title={node.longName ?? nodeHex(node.nodeId)}
                 style={{
-                  ...styles.markerOuter,
-                  borderColor: color,
-                  boxShadow: `0 0 0 2px ${color}33`,
+                  width: "2rem",
+                  height: "2rem",
+                  borderRadius: "50%",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: "0.6rem",
+                  fontWeight: "bold",
+                  fontFamily: "monospace",
                   cursor: "pointer",
+                  userSelect: "none",
+                  background: "#0f172a",
+                  color,
+                  border: `2px solid ${color}`,
+                  boxShadow: `0 0 0 2px ${color}33`,
                 }}
               >
-                <div
-                  style={{
-                    ...styles.markerInner,
-                    background: isLocal ? color : "#0f172a",
-                    color: isLocal ? "#fff" : color,
-                    border: `2px solid ${color}`,
-                  }}
-                >
-                  {(node.shortName ?? nodeHex(node.nodeId).slice(-4)).slice(0, 4)}
-                </div>
-                {isLocal && <div style={styles.localRing} />}
+                {(node.shortName ?? nodeHex(node.nodeId).slice(-4)).slice(0, 4)}
               </div>
             </Marker>
           );
@@ -131,14 +137,8 @@ export function MapPage({ nodes }: Props) {
                 <span style={styles.popupLabel}>Last heard</span>
                 <span>{formatLastHeard(selected.lastHeard)}</span>
 
-                <span style={styles.popupLabel}>Hops</span>
-                <span>
-                  {selected.hopsAway === null
-                    ? "—"
-                    : selected.hopsAway === 0
-                    ? "Direct"
-                    : `${selected.hopsAway} away`}
-                </span>
+                <span style={styles.popupLabel}>Gateway</span>
+                <span style={styles.popupMono}>{selected.lastGateway ?? "—"}</span>
 
                 {selected.snr != null && (
                   <>
@@ -164,20 +164,6 @@ export function MapPage({ nodes }: Props) {
           </Popup>
         )}
       </Map>
-
-      <div style={styles.legend}>
-        <span style={styles.legendItem}>
-          <span style={{ ...styles.legendDot, background: "#3b82f6", border: "2px solid #3b82f6" }} />
-          Local device
-        </span>
-        <span style={styles.legendItem}>
-          <span style={{ ...styles.legendDot, background: "#0f172a", border: "2px solid #94a3b8" }} />
-          Remote node
-        </span>
-        <span style={{ color: "#64748b" }}>
-          {mappableNodes.length} / {nodes.length} nodes have GPS
-        </span>
-      </div>
     </div>
   );
 }
@@ -186,96 +172,39 @@ const styles: Record<string, React.CSSProperties> = {
   wrap: {
     flex: 1,
     position: "relative",
-    minHeight: 0,        // required for flex children to shrink below content size
+    minHeight: 0,
     overflow: "hidden",
+    display: "flex",
+    flexDirection: "column",
   },
-  noGps: {
+  statsBar: {
     position: "absolute",
-    top: "1rem",
+    top: "0.75rem",
     left: "50%",
     transform: "translateX(-50%)",
-    background: "#1e293b",
-    color: "#94a3b8",
-    padding: "0.5rem 1rem",
-    borderRadius: "0.5rem",
-    fontSize: "0.875rem",
     zIndex: 10,
-  },
-  markerOuter: {
-    position: "relative",
-    borderRadius: "50%",
-  },
-  markerInner: {
-    width: "2rem",
-    height: "2rem",
-    borderRadius: "50%",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    fontSize: "0.6rem",
-    fontWeight: "bold",
-    fontFamily: "monospace",
-    userSelect: "none",
-  },
-  localRing: {
-    position: "absolute",
-    inset: "-4px",
-    borderRadius: "50%",
-    border: "2px dashed #22c55e",
-    pointerEvents: "none",
-  },
-  popup: {
-    minWidth: "180px",
+    background: "#0f172acc",
+    backdropFilter: "blur(4px)",
+    color: "#e2e8f0",
+    padding: "0.35rem 1rem",
+    borderRadius: "9999px",
     fontSize: "0.8rem",
-    color: "#1e293b",
+    display: "flex",
+    gap: "1.25rem",
+    alignItems: "center",
+    whiteSpace: "nowrap",
   },
-  popupName: {
-    fontWeight: "bold",
-    fontSize: "0.9rem",
-    marginBottom: "0.1rem",
-  },
-  popupMuted: {
-    color: "#64748b",
-    marginBottom: "0.5rem",
-  },
+  stat: { color: "#e2e8f0" },
+  warning: { color: "#fbbf24" },
+  popup: { minWidth: "180px", fontSize: "0.8rem", color: "#1e293b" },
+  popupName: { fontWeight: "bold", fontSize: "0.9rem", marginBottom: "0.1rem" },
+  popupMuted: { color: "#64748b", marginBottom: "0.5rem" },
   popupGrid: {
     display: "grid",
     gridTemplateColumns: "auto 1fr",
     gap: "0.2rem 0.75rem",
     alignItems: "baseline",
   },
-  popupLabel: {
-    color: "#64748b",
-    fontSize: "0.75rem",
-  },
-  popupMono: {
-    fontFamily: "monospace",
-    fontSize: "0.75rem",
-  },
-  legend: {
-    position: "absolute",
-    bottom: "1rem",
-    left: "1rem",
-    background: "#0f172acc",
-    backdropFilter: "blur(4px)",
-    color: "#e2e8f0",
-    padding: "0.5rem 0.75rem",
-    borderRadius: "0.5rem",
-    fontSize: "0.75rem",
-    display: "flex",
-    gap: "1rem",
-    alignItems: "center",
-    zIndex: 10,
-  },
-  legendItem: {
-    display: "flex",
-    alignItems: "center",
-    gap: "0.4rem",
-  },
-  legendDot: {
-    width: "0.75rem",
-    height: "0.75rem",
-    borderRadius: "50%",
-    display: "inline-block",
-  },
+  popupLabel: { color: "#64748b", fontSize: "0.75rem" },
+  popupMono: { fontFamily: "monospace", fontSize: "0.75rem" },
 };

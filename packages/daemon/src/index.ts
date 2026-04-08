@@ -39,16 +39,17 @@ async function main() {
   const deviceManager = new DeviceManager(db);
 
   // 4. MQTT gateway (optional — only starts if MQTT_BROKER is set)
+  let mqttGateway: MqttGateway | null = null;
   if (process.env.MQTT_BROKER) {
-    const gateway = new MqttGateway({
+    mqttGateway = new MqttGateway({
       broker:    process.env.MQTT_BROKER,
       port:      Number(process.env.MQTT_PORT ?? 1883),
       username:  process.env.MQTT_USER ?? "meshdev",
       password:  process.env.MQTT_PASS ?? "large4cats",
       rootTopic: process.env.MQTT_ROOT ?? "msh/US",
-    });
-    gateway.start();
-    deviceManager.setMqttGateway(gateway);
+    }, db);
+    mqttGateway.start();
+    deviceManager.setMqttGateway(mqttGateway);
     console.log(`[mqtt] gateway configured → ${process.env.MQTT_BROKER}`);
   }
 
@@ -65,8 +66,8 @@ async function main() {
   }
 
   // 4. Routes
-  await registerDeviceRoutes(app, deviceManager);
-  await registerWsRoute(app, deviceManager);
+  await registerDeviceRoutes(app, deviceManager, mqttGateway);
+  await registerWsRoute(app, deviceManager, mqttGateway);
 
   // Fallback to index.html for SPA routing
   app.setNotFoundHandler((_req, reply) => {

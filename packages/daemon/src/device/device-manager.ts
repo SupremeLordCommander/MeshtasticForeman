@@ -130,8 +130,33 @@ export class DeviceManager extends EventEmitter {
       );
     });
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    meshDevice.events.onPositionPacket.subscribe((pkt: any) => {
+      this._handlePosition(id, pkt).catch((err) =>
+        console.error(`[devices] position error on ${name}:`, err)
+      );
+    });
+
     meshDevice.events.onDeviceStatus.subscribe((status: Types.DeviceStatusEnum) => {
       this._handleDeviceStatus(id, name, port, status);
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    meshDevice.events.onQueueStatus.subscribe((status: any) => {
+      console.log(`[devices] queue status on ${name}: res=${status.res} free=${status.free}/${status.maxlen} packetId=${status.meshPacketId}`);
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    meshDevice.events.onTraceRoutePacket.subscribe((pkt: any) => {
+      const route: number[]     = Array.from(pkt.data?.route     ?? []);
+      const routeBack: number[] = Array.from(pkt.data?.routeBack ?? []);
+      const nodeId: number = pkt.from ?? 0;
+      const event: ServerEvent = {
+        type: "traceroute:result",
+        payload: { nodeId, route, routeBack },
+      };
+      this.emit("event", event);
+      console.log(`[devices] traceroute result from !${nodeId.toString(16).padStart(8,"0")} route=[${route.map((n) => "!"+n.toString(16)).join(",")}]`);
     });
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -486,26 +511,19 @@ export class DeviceManager extends EventEmitter {
       ? new Date(lastHeardSec * 1000).toISOString()
       : null;
 
-    const lat = n.position?.latitudeI ? n.position.latitudeI / 1e7 : null;
-    const lon = n.position?.longitudeI ? n.position.longitudeI / 1e7 : null;
-    const alt = n.position?.altitude ?? null;
-
     await this.db.query(
       `INSERT INTO nodes(node_id, device_id, long_name, short_name, mac_address,
-         hw_model, public_key, last_heard, snr, hops_away, latitude, longitude, altitude)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+         hw_model, public_key, last_heard, snr, hops_away)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
        ON CONFLICT(node_id, device_id) DO UPDATE SET
-         long_name  = COALESCE(EXCLUDED.long_name,  nodes.long_name),
-         short_name = COALESCE(EXCLUDED.short_name, nodes.short_name),
+         long_name   = COALESCE(EXCLUDED.long_name,   nodes.long_name),
+         short_name  = COALESCE(EXCLUDED.short_name,  nodes.short_name),
          mac_address = COALESCE(EXCLUDED.mac_address, nodes.mac_address),
-         hw_model   = COALESCE(EXCLUDED.hw_model,   nodes.hw_model),
-         public_key = COALESCE(EXCLUDED.public_key, nodes.public_key),
-         last_heard = COALESCE(EXCLUDED.last_heard, nodes.last_heard),
-         snr        = COALESCE(EXCLUDED.snr,        nodes.snr),
-         hops_away  = COALESCE(EXCLUDED.hops_away,  nodes.hops_away),
-         latitude   = COALESCE(EXCLUDED.latitude,   nodes.latitude),
-         longitude  = COALESCE(EXCLUDED.longitude,  nodes.longitude),
-         altitude   = COALESCE(EXCLUDED.altitude,   nodes.altitude)`,
+         hw_model    = COALESCE(EXCLUDED.hw_model,    nodes.hw_model),
+         public_key  = COALESCE(EXCLUDED.public_key,  nodes.public_key),
+         last_heard  = COALESCE(EXCLUDED.last_heard,  nodes.last_heard),
+         snr         = COALESCE(EXCLUDED.snr,         nodes.snr),
+         hops_away   = COALESCE(EXCLUDED.hops_away,   nodes.hops_away)`,
       [
         nodeId,
         deviceId,
@@ -517,11 +535,17 @@ export class DeviceManager extends EventEmitter {
         lastHeard,
         n.snr || null,
         n.hopsAway ?? null,
-        lat,
-        lon,
-        alt,
       ]
     );
+
+    // Read back current position so the emitted event reflects what's actually in DB
+    const { rows: posRows } = await this.db.query<{
+      latitude: number | null; longitude: number | null; altitude: number | null;
+    }>(
+      `SELECT latitude, longitude, altitude FROM nodes WHERE device_id = $1 AND node_id = $2`,
+      [deviceId, nodeId]
+    );
+    const pos = posRows[0];
 
     const event: ServerEvent = {
       type: "node:update",
@@ -535,9 +559,56 @@ export class DeviceManager extends EventEmitter {
         lastHeard,
         snr: n.snr || null,
         hopsAway: n.hopsAway ?? null,
-        latitude: lat,
-        longitude: lon,
-        altitude: alt,
+        latitude:  pos?.latitude  ?? null,
+        longitude: pos?.longitude ?? null,
+        altitude:  pos?.altitude  ?? null,
+      },
+    };
+    this.emit("event", event);
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async _handlePosition(deviceId: string, pkt: any) {
+    const fromNodeId: number = pkt.from ?? 0;
+    if (fromNodeId === 0) return;
+
+    const pos = pkt.data;
+    if (!pos) return;
+
+    const lat = pos.latitudeI  != null ? pos.latitudeI  / 1e7 : null;
+    const lon = pos.longitudeI != null ? pos.longitudeI / 1e7 : null;
+    if (lat === null || lon === null || (lat === 0 && lon === 0)) return;
+
+    const alt = pos.altitude ?? null;
+    const rxTime = pkt.rxTime instanceof Date
+      ? pkt.rxTime.toISOString()
+      : new Date().toISOString();
+
+    await this.db.query(
+      `UPDATE nodes SET latitude = $1, longitude = $2, altitude = $3, last_heard = GREATEST(last_heard, $4)
+       WHERE device_id = $5 AND node_id = $6`,
+      [lat, lon, alt, rxTime, deviceId, fromNodeId]
+    );
+
+    // Emit update so frontend map refreshes immediately
+    const { rows } = await this.db.query<{
+      node_id: number; long_name: string | null; short_name: string | null;
+      mac_address: string | null; hw_model: number | null; public_key: string | null;
+      last_heard: string | null; snr: number | null; hops_away: number | null;
+    }>(
+      `SELECT node_id, long_name, short_name, mac_address, hw_model, public_key,
+              last_heard, snr, hops_away FROM nodes WHERE device_id = $1 AND node_id = $2`,
+      [deviceId, fromNodeId]
+    );
+    if (!rows[0]) return;
+    const r = rows[0];
+    const event: ServerEvent = {
+      type: "node:update",
+      payload: {
+        nodeId: r.node_id, longName: r.long_name, shortName: r.short_name,
+        macAddress: r.mac_address, hwModel: r.hw_model, publicKey: r.public_key,
+        lastHeard: r.last_heard, snr: r.snr, hopsAway: r.hops_away,
+        latitude: lat, longitude: lon, altitude: alt,
       },
     };
     this.emit("event", event);

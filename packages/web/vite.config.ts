@@ -1,24 +1,26 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
+const suppress = (proxy: any) => {
+  proxy.on("error", () => {});
+  proxy.on("proxyReqWs", (_req: any, _socket: any, _head: any, _opts: any, err: any) => {
+    if (err) err.handled = true;
+  });
+};
+
 export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
     proxy: {
-      // In dev, proxy API and WebSocket calls to the daemon
       "/api": {
         target: "http://localhost:3750",
-        configure: (proxy) => {
-          proxy.on("error", () => { /* suppress ECONNREFUSED during daemon startup */ });
-        },
+        configure: suppress,
       },
       "/ws": {
         target: "ws://localhost:3750",
         ws: true,
-        configure: (proxy) => {
-          proxy.on("error", () => { /* suppress ECONNREFUSED during daemon startup */ });
-        },
+        configure: suppress,
       },
     },
   },

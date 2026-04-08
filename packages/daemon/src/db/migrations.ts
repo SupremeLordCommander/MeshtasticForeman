@@ -99,6 +99,35 @@ const migrations: string[] = [
     applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
   );
   `,
+
+  /* 002 – mqtt_nodes: nodes discovered via regional MQTT subscription */
+  `
+  CREATE TABLE IF NOT EXISTS mqtt_nodes (
+    node_id       BIGINT PRIMARY KEY,
+    long_name     TEXT,
+    short_name    TEXT,
+    hw_model      INT,
+    public_key    TEXT,
+    last_heard    TIMESTAMPTZ,
+    latitude      DOUBLE PRECISION,
+    longitude     DOUBLE PRECISION,
+    altitude      INT,
+    last_gateway  TEXT,
+    snr           REAL,
+    hops_away     INT
+  );
+  `,
+
+  /* 003 – add region_path to mqtt_nodes (e.g. "US/CA/Humboldt/Eureka") */
+  `
+  ALTER TABLE mqtt_nodes ADD COLUMN IF NOT EXISTS region_path TEXT;
+  `,
+
+  /* 004 – purge any local-mesh data that polluted mqtt_nodes before the fix;
+            only rows with a region_path (set by _handleInbound) are legitimate */
+  `
+  DELETE FROM mqtt_nodes WHERE region_path IS NULL;
+  `,
 ];
 
 export async function runMigrations(db: PGlite) {
