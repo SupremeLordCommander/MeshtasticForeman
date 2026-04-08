@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import type { DeviceInfo, NodeInfo } from "@foreman/shared";
 import { foremanClient } from "../ws/client.js";
+import logo from "../assets/logo.png";
 
 function formatLastHeard(iso: string | null): string {
   if (!iso) return "—";
@@ -114,7 +115,10 @@ export function NodesPage({ devices, nodes }: Props) {
           </span>
         </h2>
         {nodes.length === 0 ? (
-          <p style={styles.muted}>No nodes seen yet.</p>
+          <div style={styles.emptyState}>
+            <img src={logo} alt="" style={styles.emptyLogo} />
+            <p style={styles.muted}>No nodes seen yet.</p>
+          </div>
         ) : (
           <div style={styles.tableWrap}>
             <table style={styles.table}>
@@ -264,6 +268,18 @@ const styles: Record<string, React.CSSProperties> = {
   },
   tr: { borderBottom: "1px solid #1e293b" },
   td: { padding: "0.5rem 0.75rem", verticalAlign: "middle" },
+  emptyState: {
+    display: "flex",
+    flexDirection: "column" as const,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: "4rem 2rem",
+    gap: "1.5rem",
+  },
+  emptyLogo: {
+    width: "12rem",
+    opacity: 0.15,
+  },
   mono: { fontFamily: "monospace", fontSize: "0.8rem", color: "#94a3b8" },
   actionBtn: {
     background: "#1e293b",

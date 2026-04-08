@@ -1,4 +1,5 @@
 import type { MqttNode } from "@foreman/shared";
+import logo from "../assets/logo.png";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -212,7 +213,11 @@ export function MqttNodesPage({ nodes }: Props) {
         )}
       </div>
 
-      {nodes.length === 0 ? null : (
+      {nodes.length === 0 ? (
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "4rem 2rem", gap: "1.5rem" }}>
+          <img src={logo} alt="" style={{ width: "12rem", opacity: 0.15 }} />
+        </div>
+      ) : (
         Object.entries(tree.children)
           .sort(([a], [b]) => a.localeCompare(b))
           .map(([label, subtree]) => (
