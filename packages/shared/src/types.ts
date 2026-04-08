@@ -73,6 +73,22 @@ export interface Channel {
   psk: string | null; // base64
 }
 
+export interface MqttNode {
+  nodeId: number;
+  longName: string | null;
+  shortName: string | null;
+  hwModel: number | null;
+  publicKey: string | null;
+  lastHeard: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  altitude: number | null;
+  lastGateway: string | null;
+  regionPath: string | null;
+  snr: number | null;
+  hopsAway: number | null;
+}
+
 export interface Waypoint {
   id: number;
   name: string;

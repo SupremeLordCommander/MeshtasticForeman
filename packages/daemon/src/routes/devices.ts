@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { DeviceManager } from "../device/device-manager.js";
+import type { MqttGateway } from "../mqtt/gateway.js";
 
 const connectBodySchema = z.object({
   port: z.string().min(1),
@@ -9,7 +10,8 @@ const connectBodySchema = z.object({
 
 export async function registerDeviceRoutes(
   app: FastifyInstance,
-  deviceManager: DeviceManager
+  deviceManager: DeviceManager,
+  mqttGateway?: MqttGateway | null,
 ) {
   app.get("/api/devices", async () => {
     const rows = await deviceManager.listDevices();
@@ -29,6 +31,11 @@ export async function registerDeviceRoutes(
     const { id } = req.params as { id: string };
     const nodes = await deviceManager.listNodes(id);
     return nodes;
+  });
+
+  app.get("/api/mqtt-nodes", async () => {
+    if (!mqttGateway) return [];
+    return mqttGateway.listMqttNodes();
   });
 
   app.delete("/api/devices/:id", async (req, reply) => {

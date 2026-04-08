@@ -1,9 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import type { WebSocket, RawData } from "ws";
-import type { ServerEvent, ClientCommand } from "@foreman/shared";
+import type { ServerEvent, ClientCommand, MqttNode } from "@foreman/shared";
 import { clientCommandSchema } from "@foreman/shared";
 import { Types } from "@meshtastic/core";
 import type { DeviceManager } from "../device/device-manager.js";
+import type { MqttGateway } from "../mqtt/gateway.js";
 
 /**
  * Single WebSocket endpoint at /ws
@@ -13,7 +14,8 @@ import type { DeviceManager } from "../device/device-manager.js";
  */
 export async function registerWsRoute(
   app: FastifyInstance,
-  deviceManager: DeviceManager
+  deviceManager: DeviceManager,
+  mqttGateway?: MqttGateway | null,
 ) {
   const clients = new Set<WebSocket>();
   /** Sockets that have opted in to raw packet streaming */
@@ -31,6 +33,12 @@ export async function registerWsRoute(
   };
 
   deviceManager.on("event", broadcast);
+
+  // Forward mqtt_node:update events from the gateway to all WS clients
+  mqttGateway?.on("mqtt_node:update", (node: MqttNode) => {
+    const event: ServerEvent = { type: "mqtt_node:update", payload: node };
+    broadcast(event);
+  });
 
   app.get("/ws", { websocket: true }, (socket) => {
     clients.add(socket);
@@ -60,6 +68,15 @@ export async function registerWsRoute(
         const nodeListEvent: ServerEvent = { type: "node:list", payload: nodes };
         socket.send(JSON.stringify(nodeListEvent));
       }
+
+      // Send known MQTT-sourced nodes
+      if (mqttGateway) {
+        const mqttNodes = await mqttGateway.listMqttNodes();
+        if (mqttNodes.length > 0) {
+          const mqttListEvent: ServerEvent = { type: "mqtt_node:list", payload: mqttNodes };
+          socket.send(JSON.stringify(mqttListEvent));
+        }
+      }
     });
 
     socket.on("message", (raw: RawData) => {
@@ -76,7 +93,7 @@ export async function registerWsRoute(
         return;
       }
 
-      handleClientCommand(parsed, socket, deviceManager, packetSubscriptions).catch((err) => {
+      handleClientCommand(parsed, socket, deviceManager, packetSubscriptions, mqttGateway).catch((err) => {
         console.error("[ws] command error:", err);
         socket.send(
           JSON.stringify({
@@ -99,7 +116,8 @@ async function handleClientCommand(
   command: ClientCommand,
   socket: WebSocket,
   deviceManager: DeviceManager,
-  packetSubscriptions: Set<WebSocket>
+  packetSubscriptions: Set<WebSocket>,
+  mqttGateway?: MqttGateway | null,
 ) {
   switch (command.type) {
     case "message:send": {
@@ -154,6 +172,62 @@ async function handleClientCommand(
       const event: ServerEvent = { type: "node:list", payload: nodes };
       socket.send(JSON.stringify(event));
       console.log(`[ws] nodes:request-list → ${device.name}, returned ${nodes.length} nodes`);
+      break;
+    }
+
+    case "mqtt_nodes:request-list": {
+      const nodes = mqttGateway ? await mqttGateway.listMqttNodes() : [];
+      const event: ServerEvent = { type: "mqtt_node:list", payload: nodes };
+      socket.send(JSON.stringify(event));
+      console.log(`[ws] mqtt_nodes:request-list → returned ${nodes.length} nodes`);
+      break;
+    }
+
+    case "node:request-position": {
+      const { deviceId, nodeId } = command.payload;
+      const device = deviceManager.getDevice(deviceId);
+      if (!device) {
+        socket.send(JSON.stringify({
+          type: "error",
+          payload: { code: "DEVICE_NOT_FOUND", message: `No device with id ${deviceId}` },
+        }));
+        return;
+      }
+      try {
+        await device.meshDevice.requestPosition(nodeId);
+        console.log(`[ws] node:request-position → ${device.name} for node !${nodeId.toString(16).padStart(8,"0")}`);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.log(`[ws] node:request-position failed for !${nodeId.toString(16).padStart(8,"0")}: ${msg}`);
+        socket.send(JSON.stringify({
+          type: "error",
+          payload: { code: "NODE_UNREACHABLE", message: `Position request failed (${msg})`, nodeId },
+        }));
+      }
+      break;
+    }
+
+    case "node:traceroute": {
+      const { deviceId, nodeId } = command.payload;
+      const device = deviceManager.getDevice(deviceId);
+      if (!device) {
+        socket.send(JSON.stringify({
+          type: "error",
+          payload: { code: "DEVICE_NOT_FOUND", message: `No device with id ${deviceId}` },
+        }));
+        return;
+      }
+      try {
+        await device.meshDevice.traceRoute(nodeId);
+        console.log(`[ws] node:traceroute → ${device.name} for node !${nodeId.toString(16).padStart(8,"0")}`);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.log(`[ws] node:traceroute failed for !${nodeId.toString(16).padStart(8,"0")}: ${msg}`);
+        socket.send(JSON.stringify({
+          type: "error",
+          payload: { code: "NODE_UNREACHABLE", message: `Traceroute failed (${msg})`, nodeId },
+        }));
+      }
       break;
     }
 

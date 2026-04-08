@@ -10,11 +10,14 @@
  *   {root}/2/map/                       — unencrypted ServiceEnvelope (MapReport)
  */
 
-import { createCipheriv, randomBytes } from "node:crypto";
+import { EventEmitter } from "node:events";
+import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { Buffer } from "node:buffer";
 import mqtt from "mqtt";
 import { create, toBinary, fromBinary } from "@bufbuild/protobuf";
 import { MeshDevice, Types, Protobuf } from "@meshtastic/core";
+import type { PGlite } from "@electric-sql/pglite";
+import type { MqttNode } from "@foreman/shared";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -66,13 +69,14 @@ interface DeviceState {
 // MqttGateway
 // ---------------------------------------------------------------------------
 
-export class MqttGateway {
+export class MqttGateway extends EventEmitter {
   private readonly cfg: Required<MqttGatewayConfig>;
   private client: mqtt.MqttClient | null = null;
   private connected = false;
   private readonly devices = new Map<string, DeviceState>();
 
-  constructor(cfg: MqttGatewayConfig) {
+  constructor(cfg: MqttGatewayConfig, private readonly db: PGlite) {
+    super();
     this.cfg = {
       selfAnnounceInterval: DEFAULT_SELF_ANNOUNCE_INTERVAL,
       ...cfg,
@@ -85,25 +89,50 @@ export class MqttGateway {
 
   start(): void {
     const url = `mqtt://${this.cfg.broker}:${this.cfg.port}`;
+    const clientId = `foreman_${randomBytes(4).toString("hex")}`;
     this.client = mqtt.connect(url, {
       username: this.cfg.username,
       password: this.cfg.password,
+      clientId,
       reconnectPeriod: 5000,
       keepalive: 60,
     });
+    console.log(`[mqtt] connecting as clientId=${clientId}`);
 
     this.client.on("connect", () => {
       this.connected = true;
       console.log(`[mqtt] connected to ${this.cfg.broker}`);
+
+      // Subscribe county-wide: strip the city segment from rootTopic so we
+      // catch traffic from all cities (e.g. msh/US/CA/Humboldt/+/2/e/#)
+      const parts = this.cfg.rootTopic.split("/");
+      const countyTopic = parts.slice(0, -1).join("/");
+      const subTopic = `${countyTopic}/+/2/e/#`;
+      this.client!.subscribe(subTopic, (err) => {
+        if (err) console.error("[mqtt] subscribe error:", err.message);
+        else console.log(`[mqtt] subscribed to ${subTopic}`);
+      });
+
       // Re-announce all currently attached devices on reconnect
       for (const [deviceId] of this.devices) {
         this._publishSelf(deviceId).catch(console.error);
       }
     });
 
-    this.client.on("disconnect", () => {
+    this.client.on("message", (topic, payload) => {
+      this._handleInbound(topic, payload).catch((err) =>
+        console.error("[mqtt] inbound error:", err.message)
+      );
+    });
+
+    this.client.on("disconnect", (packet: any) => {
       this.connected = false;
-      console.log("[mqtt] disconnected");
+      console.log(`[mqtt] disconnected reason=${packet?.reasonCode ?? "?"} (${packet?.properties?.reasonString ?? "no reason"})`);
+    });
+
+    this.client.on("close", () => {
+      this.connected = false;
+      console.log("[mqtt] connection closed");
     });
 
     this.client.on("error", (err) => {
@@ -176,19 +205,30 @@ export class MqttGateway {
       scheduleAnnounceIfReady();
     });
 
-    // Cache our own user info for self-announce
+    // Cache own user info and position for self-announce only — do NOT write to mqtt_nodes here.
+    // mqtt_nodes is exclusively populated from _handleInbound (remote broker data).
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     meshDevice.events.onNodeInfoPacket.subscribe((nodeInfo: any) => {
-      if (nodeInfo.num === state.nodeNum && nodeInfo.user) {
-        state.cachedUser = nodeInfo.user as Protobuf.Mesh.User;
+      const isOurs = state.nodeNum !== 0
+        ? nodeInfo.num === state.nodeNum
+        : !!(nodeInfo.user?.id && nodeInfo.user.id === state.gatewayId);
+      console.log(`[mqtt] nodeInfo num=!${(nodeInfo.num ?? 0).toString(16).padStart(8,"0")} ours=${isOurs} stateNum=${state.gatewayId} hasPos=${!!nodeInfo.position?.latitudeI} latI=${nodeInfo.position?.latitudeI ?? "none"}`);
+      if (isOurs) {
+        if (nodeInfo.user) state.cachedUser = nodeInfo.user as Protobuf.Mesh.User;
+        if (nodeInfo.position?.latitudeI) {
+          state.cachedPosition = nodeInfo.position as Protobuf.Mesh.Position;
+          console.log(`[mqtt] cached own position from nodeInfo: lat=${nodeInfo.position.latitudeI / 1e7} lon=${nodeInfo.position.longitudeI / 1e7}`);
+        }
       }
     });
 
-    // Cache our own position for self-announce
+    // Cache own position for self-announce — fires when device transmits its own position
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     meshDevice.events.onPositionPacket.subscribe((pkt: any) => {
+      console.log(`[mqtt] positionPacket from=!${(pkt.from ?? 0).toString(16).padStart(8,"0")} stateNum=${state.gatewayId} latI=${pkt.data?.latitudeI ?? "none"}`);
       if (pkt.from === state.nodeNum) {
         state.cachedPosition = pkt.data as Protobuf.Mesh.Position;
+        console.log(`[mqtt] cached own position from positionPacket: lat=${pkt.data?.latitudeI / 1e7}`);
       }
     });
 
@@ -302,6 +342,8 @@ export class MqttGateway {
     const state = this.devices.get(deviceId);
     if (!state || state.nodeNum === 0) return;
 
+    console.log(`[mqtt] _publishSelf ${state.gatewayId}: hasUser=${!!state.cachedUser} hasPos=${!!state.cachedPosition} latI=${state.cachedPosition?.latitudeI ?? "none"} lonI=${state.cachedPosition?.longitudeI ?? "none"}`);
+
     const ch = state.channels.get(0) ?? { name: "LongFast", key: DEFAULT_KEY };
 
     // NODEINFO_APP
@@ -319,6 +361,30 @@ export class MqttGateway {
         state, ch, Protobuf.Portnums.PortNum.POSITION_APP,
         toBinary(Protobuf.Mesh.PositionSchema, pos),
       );
+
+      // Write our own position directly — don't rely on broker echo
+      const lat = pos.latitudeI  != null ? pos.latitudeI  / 1e7 : null;
+      const lon = pos.longitudeI != null ? pos.longitudeI / 1e7 : null;
+      const alt = pos.altitude   ?? null;
+      const regionParts = this.cfg.rootTopic.split("/");
+      const regionPath  = regionParts.slice(1).join("/"); // strip leading "msh"
+      const rxTime = new Date().toISOString();
+      if (lat !== null && lon !== null && !(lat === 0 && lon === 0)) {
+        await this.db.query(
+          `INSERT INTO mqtt_nodes(node_id, latitude, longitude, altitude, last_heard, last_gateway, region_path)
+           VALUES ($1,$2,$3,$4,$5,$6,$7)
+           ON CONFLICT(node_id) DO UPDATE SET
+             latitude     = EXCLUDED.latitude,
+             longitude    = EXCLUDED.longitude,
+             altitude     = COALESCE(EXCLUDED.altitude, mqtt_nodes.altitude),
+             last_heard   = GREATEST(EXCLUDED.last_heard, mqtt_nodes.last_heard),
+             last_gateway = EXCLUDED.last_gateway,
+             region_path  = EXCLUDED.region_path`,
+          [state.nodeNum, lat, lon, alt, rxTime, state.gatewayId, regionPath]
+        );
+        await this._emitNodeUpdate(state.nodeNum, rxTime, state.gatewayId, regionPath, null, null);
+        console.log(`[mqtt] self position written to mqtt_nodes: ${lat.toFixed(5)}, ${lon.toFixed(5)}`);
+      }
     }
 
     // MAP_REPORT_APP — unencrypted, goes to 2/map/
@@ -413,6 +479,208 @@ export class MqttGateway {
   }
 
   // ---------------------------------------------------------------------------
+  // Public DB accessors
+  // ---------------------------------------------------------------------------
+
+  async listMqttNodes(): Promise<MqttNode[]> {
+    const { rows } = await this.db.query<{
+      node_id: number; long_name: string | null; short_name: string | null;
+      hw_model: number | null; public_key: string | null; last_heard: string | null;
+      latitude: number | null; longitude: number | null; altitude: number | null;
+      last_gateway: string | null; region_path: string | null;
+      snr: number | null; hops_away: number | null;
+    }>(
+      `SELECT node_id, long_name, short_name, hw_model, public_key, last_heard,
+              latitude, longitude, altitude, last_gateway, region_path, snr, hops_away
+       FROM mqtt_nodes ORDER BY last_heard DESC NULLS LAST`
+    );
+    return rows.map((r) => ({
+      nodeId: r.node_id, longName: r.long_name, shortName: r.short_name,
+      hwModel: r.hw_model, publicKey: r.public_key, lastHeard: r.last_heard,
+      latitude: r.latitude, longitude: r.longitude, altitude: r.altitude,
+      lastGateway: r.last_gateway, regionPath: r.region_path, snr: r.snr, hopsAway: r.hops_away,
+    }));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Inbound MQTT message handling
+  // ---------------------------------------------------------------------------
+
+  private async _handleInbound(topic: string, payload: Buffer): Promise<void> {
+    // Only process encrypted traffic: {root}/2/e/{channel}/{!gatewayId}
+    const parts = topic.split("/");
+    const eIdx = parts.indexOf("e");
+    if (eIdx === -1 || parts[eIdx - 1] !== "2") {
+      console.log(`[mqtt] inbound skip (not 2/e): ${topic}`);
+      return;
+    }
+    const channelName = parts[eIdx + 1] ?? "LongFast";
+    const gatewayId   = parts[eIdx + 2] ?? "unknown";
+    // Region path = everything between "msh/" and "/2/e" e.g. "US/CA/Humboldt/Eureka"
+    const regionPath = parts.slice(1, eIdx - 1).join("/");
+
+    console.log(`[mqtt] inbound topic=${topic} channel=${channelName} gw=${gatewayId} region=${regionPath}`);
+
+    let envelope: Protobuf.Mqtt.ServiceEnvelope;
+    try {
+      envelope = fromBinary(Protobuf.Mqtt.ServiceEnvelopeSchema, payload);
+    } catch (err) {
+      console.log(`[mqtt] inbound envelope parse failed: ${err}`);
+      return;
+    }
+
+    const pkt = envelope.packet;
+    if (!pkt) { console.log("[mqtt] inbound: no packet in envelope"); return; }
+
+    console.log(`[mqtt] inbound pkt from=!${(pkt.from ?? 0).toString(16).padStart(8,"0")} variant=${pkt.payloadVariant?.case}`);
+
+    if (pkt.payloadVariant?.case !== "encrypted") return;
+
+    const fromNum  = pkt.from ?? 0;
+    const packetId = pkt.id   ?? 0;
+
+    // Try to decrypt with the channel key — fall back to DEFAULT_KEY
+    let channelKey = DEFAULT_KEY;
+    for (const state of this.devices.values()) {
+      for (const [, ch] of state.channels) {
+        if (ch.name === channelName) { channelKey = Buffer.from(ch.key) as Buffer<ArrayBuffer>; break; }
+      }
+    }
+
+    let data: Protobuf.Mesh.Data;
+    try {
+      const plain = this._decrypt(channelKey, packetId, fromNum,
+        Buffer.from(pkt.payloadVariant.value as Uint8Array));
+      data = fromBinary(Protobuf.Mesh.DataSchema, plain);
+    } catch (err) {
+      console.log(`[mqtt] inbound decrypt failed from=!${fromNum.toString(16).padStart(8,"0")}: ${err}`);
+      return;
+    }
+
+    const portname = (Protobuf.Portnums.PortNum as Record<number, string>)[data.portnum] ?? data.portnum;
+    console.log(`[mqtt] inbound decoded portnum=${portname} from=!${fromNum.toString(16).padStart(8,"0")}`);
+
+    const rxTime = pkt.rxTime && pkt.rxTime > 0
+      ? new Date(pkt.rxTime * 1000).toISOString()
+      : new Date().toISOString();
+
+    await this._upsertFromData(fromNum, data, rxTime, gatewayId, regionPath,
+      pkt.rxSnr ?? null, pkt.hopLimit ?? null);
+  }
+
+  private async _upsertFromData(
+    nodeId: number,
+    data: Protobuf.Mesh.Data,
+    rxTime: string,
+    gatewayId: string,
+    regionPath: string,
+    snr: number | null,
+    hopsAway: number | null,
+  ): Promise<void> {
+    if (nodeId === 0) return;
+
+    const portnum = data.portnum;
+
+    if (portnum === Protobuf.Portnums.PortNum.NODEINFO_APP) {
+      let user: Protobuf.Mesh.User;
+      try { user = fromBinary(Protobuf.Mesh.UserSchema, data.payload); } catch { return; }
+
+      await this.db.query(
+        `INSERT INTO mqtt_nodes(node_id, long_name, short_name, hw_model, public_key,
+           last_heard, last_gateway, region_path, snr, hops_away)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+         ON CONFLICT(node_id) DO UPDATE SET
+           long_name    = COALESCE(EXCLUDED.long_name,   mqtt_nodes.long_name),
+           short_name   = COALESCE(EXCLUDED.short_name,  mqtt_nodes.short_name),
+           hw_model     = COALESCE(EXCLUDED.hw_model,    mqtt_nodes.hw_model),
+           public_key   = COALESCE(EXCLUDED.public_key,  mqtt_nodes.public_key),
+           last_heard   = GREATEST(EXCLUDED.last_heard,  mqtt_nodes.last_heard),
+           last_gateway = EXCLUDED.last_gateway,
+           region_path  = EXCLUDED.region_path,
+           snr          = COALESCE(EXCLUDED.snr,         mqtt_nodes.snr),
+           hops_away    = COALESCE(EXCLUDED.hops_away,   mqtt_nodes.hops_away)`,
+        [nodeId, user.longName || null, user.shortName || null,
+         user.hwModel ?? null, user.publicKey?.length
+           ? Buffer.from(user.publicKey).toString("hex") : null,
+         rxTime, gatewayId, regionPath, snr, hopsAway]
+      );
+      await this._emitNodeUpdate(nodeId, rxTime, gatewayId, regionPath, snr, hopsAway);
+
+    } else if (portnum === Protobuf.Portnums.PortNum.POSITION_APP) {
+      let pos: Protobuf.Mesh.Position;
+      try { pos = fromBinary(Protobuf.Mesh.PositionSchema, data.payload); } catch { return; }
+
+      const lat = pos.latitudeI  != null ? pos.latitudeI  / 1e7 : null;
+      const lon = pos.longitudeI != null ? pos.longitudeI / 1e7 : null;
+      const alt = pos.altitude   ?? null;
+      console.log(`[mqtt] POSITION_APP from=!${nodeId.toString(16).padStart(8,"0")} latI=${pos.latitudeI ?? "null"} lonI=${pos.longitudeI ?? "null"} → lat=${lat} lon=${lon}`);
+      if (lat === null || lon === null || (lat === 0 && lon === 0)) {
+        console.log(`[mqtt] POSITION_APP dropped (lat=${lat} lon=${lon})`);
+        return;
+      }
+
+      await this.db.query(
+        `INSERT INTO mqtt_nodes(node_id, latitude, longitude, altitude, last_heard, last_gateway, region_path, snr, hops_away)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+         ON CONFLICT(node_id) DO UPDATE SET
+           latitude     = EXCLUDED.latitude,
+           longitude    = EXCLUDED.longitude,
+           altitude     = COALESCE(EXCLUDED.altitude,    mqtt_nodes.altitude),
+           last_heard   = GREATEST(EXCLUDED.last_heard,  mqtt_nodes.last_heard),
+           last_gateway = EXCLUDED.last_gateway,
+           region_path  = EXCLUDED.region_path,
+           snr          = COALESCE(EXCLUDED.snr,         mqtt_nodes.snr),
+           hops_away    = COALESCE(EXCLUDED.hops_away,   mqtt_nodes.hops_away)`,
+        [nodeId, lat, lon, alt, rxTime, gatewayId, regionPath, snr, hopsAway]
+      );
+
+      // Also update the local mesh nodes table — MQTT is authoritative for position
+      // when the node isn't being heard directly over radio by the connected device.
+      await this.db.query(
+        `UPDATE nodes SET latitude = $1, longitude = $2, altitude = COALESCE($3, altitude),
+           last_heard = GREATEST(last_heard, $4)
+         WHERE node_id = $5`,
+        [lat, lon, alt, rxTime, nodeId]
+      );
+
+      await this._emitNodeUpdate(nodeId, rxTime, gatewayId, regionPath, snr, hopsAway);
+
+    } else {
+      // Any other portnum — just refresh last_heard if node is already known
+      await this.db.query(
+        `UPDATE mqtt_nodes SET last_heard = GREATEST(last_heard, $1), last_gateway = $2,
+           region_path = COALESCE($3, region_path)
+         WHERE node_id = $4 AND (last_heard IS NULL OR last_heard < $1)`,
+        [rxTime, gatewayId, regionPath, nodeId]
+      );
+    }
+  }
+
+  private async _emitNodeUpdate(
+    nodeId: number, rxTime: string, gatewayId: string, regionPath: string,
+    snr: number | null, hopsAway: number | null,
+  ): Promise<void> {
+    const { rows } = await this.db.query<{
+      node_id: number; long_name: string | null; short_name: string | null;
+      hw_model: number | null; public_key: string | null;
+      latitude: number | null; longitude: number | null; altitude: number | null;
+    }>(
+      `SELECT node_id, long_name, short_name, hw_model, public_key,
+              latitude, longitude, altitude FROM mqtt_nodes WHERE node_id = $1`,
+      [nodeId]
+    );
+    if (!rows[0]) return;
+    const r = rows[0];
+    const node: MqttNode = {
+      nodeId: r.node_id, longName: r.long_name, shortName: r.short_name,
+      hwModel: r.hw_model, publicKey: r.public_key, lastHeard: rxTime,
+      latitude: r.latitude, longitude: r.longitude, altitude: r.altitude,
+      lastGateway: gatewayId, regionPath, snr, hopsAway,
+    };
+    this.emit("mqtt_node:update", node);
+  }
+
+  // ---------------------------------------------------------------------------
   // Crypto helpers
   // ---------------------------------------------------------------------------
 
@@ -422,6 +690,14 @@ export class MqttGateway {
     return Buffer.from(psk).subarray(0, 16).equals(Buffer.alloc(16))
       ? DEFAULT_KEY
       : Buffer.concat([Buffer.from(psk), Buffer.alloc(16)]).subarray(0, 16);
+  }
+
+  private _decrypt(key: Buffer, packetId: number, fromNode: number, ciphertext: Buffer): Buffer {
+    const nonce = Buffer.alloc(16);
+    nonce.writeUInt32LE(packetId >>> 0, 0);
+    nonce.writeUInt32LE(fromNode >>> 0, 8);
+    const decipher = createDecipheriv("aes-128-ctr", key, nonce);
+    return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
   }
 
   private _encrypt(key: Buffer, packetId: number, fromNode: number, plaintext: Buffer): Buffer {
