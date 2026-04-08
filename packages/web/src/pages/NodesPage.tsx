@@ -188,6 +188,21 @@ export function NodesPage({ devices, nodes, mqttNodes }: Props) {
   const [sortCol, setSortCol] = useState<SortCol>("distance");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
 
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
+    try {
+      const saved = localStorage.getItem("nodes-sections-collapsed");
+      return saved ? JSON.parse(saved) : {};
+    } catch { return {}; }
+  });
+
+  function toggleSection(key: string) {
+    setCollapsed((prev) => {
+      const next = { ...prev, [key]: !prev[key] };
+      try { localStorage.setItem("nodes-sections-collapsed", JSON.stringify(next)); } catch { /* ignore */ }
+      return next;
+    });
+  }
+
   useEffect(() => {
     const off = foremanClient.on((event) => {
       if (event.type === "traceroute:result") {
@@ -340,20 +355,23 @@ export function NodesPage({ devices, nodes, mqttNodes }: Props) {
               <tbody>
                 {matched.length > 0 && (
                   <>
-                    <SectionDivider label="Mesh + MQTT" count={matched.length} colCount={colCount} color="#60a5fa" />
-                    {matched.map((m) => <NodeRows key={m.nodeId} merged={m} {...nodeRowProps} />)}
+                    <SectionHeader label="Mesh + MQTT" count={matched.length} colCount={colCount} color="#60a5fa"
+                      collapsed={!!collapsed["both"]} onToggle={() => toggleSection("both")} />
+                    {!collapsed["both"] && matched.map((m) => <NodeRows key={m.nodeId} merged={m} {...nodeRowProps} />)}
                   </>
                 )}
                 {meshOnly.length > 0 && (
                   <>
-                    <SectionDivider label="Mesh only" count={meshOnly.length} colCount={colCount} color="#94a3b8" />
-                    {meshOnly.map((m) => <NodeRows key={m.nodeId} merged={m} {...nodeRowProps} />)}
+                    <SectionHeader label="Mesh only" count={meshOnly.length} colCount={colCount} color="#94a3b8"
+                      collapsed={!!collapsed["mesh"]} onToggle={() => toggleSection("mesh")} />
+                    {!collapsed["mesh"] && meshOnly.map((m) => <NodeRows key={m.nodeId} merged={m} {...nodeRowProps} />)}
                   </>
                 )}
                 {mqttOnly.length > 0 && (
                   <>
-                    <SectionDivider label="MQTT only" count={mqttOnly.length} colCount={colCount} color="#34d399" />
-                    {mqttOnly.map((m) => <NodeRows key={m.nodeId} merged={m} {...nodeRowProps} />)}
+                    <SectionHeader label="MQTT only" count={mqttOnly.length} colCount={colCount} color="#34d399"
+                      collapsed={!!collapsed["mqtt"]} onToggle={() => toggleSection("mqtt")} />
+                    {!collapsed["mqtt"] && mqttOnly.map((m) => <NodeRows key={m.nodeId} merged={m} {...nodeRowProps} />)}
                   </>
                 )}
               </tbody>
@@ -388,14 +406,18 @@ function SortableHeader({ col, label, sortCol, sortDir, onSort }: {
 }
 
 // ---------------------------------------------------------------------------
-// Section divider row
+// Accordion section header row
 // ---------------------------------------------------------------------------
 
-function SectionDivider({ label, count, colCount, color }: {
+function SectionHeader({ label, count, colCount, color, collapsed, onToggle }: {
   label: string; count: number; colCount: number; color: string;
+  collapsed: boolean; onToggle: () => void;
 }) {
   return (
-    <tr style={{ background: "#0f172a" }}>
+    <tr
+      style={{ background: "#0f172a", cursor: "pointer", userSelect: "none" }}
+      onClick={onToggle}
+    >
       <td
         colSpan={colCount}
         style={{
@@ -409,6 +431,9 @@ function SectionDivider({ label, count, colCount, color }: {
           borderBottom: "1px solid #1e293b",
         }}
       >
+        <span style={{ marginRight: "0.5rem", fontSize: "0.6rem", opacity: 0.7 }}>
+          {collapsed ? "▶" : "▼"}
+        </span>
         {label}
         <span style={{
           marginLeft: "0.5rem",

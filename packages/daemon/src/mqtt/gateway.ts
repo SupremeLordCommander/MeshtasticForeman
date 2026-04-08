@@ -561,28 +561,33 @@ export class MqttGateway extends EventEmitter {
     const pkt = envelope.packet;
     if (!pkt) { console.log("[mqtt] inbound: no packet in envelope"); return; }
 
-    console.log(`[mqtt] inbound pkt from=!${(pkt.from ?? 0).toString(16).padStart(8,"0")} variant=${pkt.payloadVariant?.case}`);
-
-    if (pkt.payloadVariant?.case !== "encrypted") return;
-
     const fromNum  = pkt.from ?? 0;
     const packetId = pkt.id   ?? 0;
-
-    // Try to decrypt with the channel key — fall back to DEFAULT_KEY
-    let channelKey = DEFAULT_KEY;
-    for (const state of this.devices.values()) {
-      for (const [, ch] of state.channels) {
-        if (ch.name === channelName) { channelKey = Buffer.from(ch.key) as Buffer<ArrayBuffer>; break; }
-      }
-    }
+    console.log(`[mqtt] inbound pkt from=!${fromNum.toString(16).padStart(8,"0")} variant=${pkt.payloadVariant?.case}`);
 
     let data: Protobuf.Mesh.Data;
-    try {
-      const plain = this._decrypt(channelKey, packetId, fromNum,
-        Buffer.from(pkt.payloadVariant.value as Uint8Array));
-      data = fromBinary(Protobuf.Mesh.DataSchema, plain);
-    } catch (err) {
-      console.log(`[mqtt] inbound decrypt failed from=!${fromNum.toString(16).padStart(8,"0")}: ${err}`);
+
+    if (pkt.payloadVariant?.case === "decoded") {
+      // Cleartext packet — node has MQTT encryption disabled, use payload directly
+      data = pkt.payloadVariant.value as Protobuf.Mesh.Data;
+    } else if (pkt.payloadVariant?.case === "encrypted") {
+      // Try to decrypt with the channel key — fall back to DEFAULT_KEY
+      let channelKey = DEFAULT_KEY;
+      for (const state of this.devices.values()) {
+        for (const [, ch] of state.channels) {
+          if (ch.name === channelName) { channelKey = Buffer.from(ch.key) as Buffer<ArrayBuffer>; break; }
+        }
+      }
+      try {
+        const plain = this._decrypt(channelKey, packetId, fromNum,
+          Buffer.from(pkt.payloadVariant.value as Uint8Array));
+        data = fromBinary(Protobuf.Mesh.DataSchema, plain);
+      } catch (err) {
+        console.log(`[mqtt] inbound decrypt failed from=!${fromNum.toString(16).padStart(8,"0")}: ${err}`);
+        return;
+      }
+    } else {
+      console.log(`[mqtt] inbound skip unknown variant=${pkt.payloadVariant?.case} from=!${fromNum.toString(16).padStart(8,"0")}`);
       return;
     }
 
@@ -679,13 +684,18 @@ export class MqttGateway extends EventEmitter {
       await this._emitNodeUpdate(nodeId, rxTime, gatewayId, regionPath, snr, hopsAway);
 
     } else {
-      // Any other portnum — just refresh last_heard if node is already known
+      // Any other portnum — upsert so an unknown node is created on first contact,
+      // then fill in details when NODEINFO / POSITION packets eventually arrive.
       await this.db.query(
-        `UPDATE mqtt_nodes SET last_heard = GREATEST(last_heard, $1), last_gateway = $2,
-           region_path = COALESCE($3, region_path)
-         WHERE node_id = $4 AND (last_heard IS NULL OR last_heard < $1)`,
-        [rxTime, gatewayId, regionPath, nodeId]
+        `INSERT INTO mqtt_nodes(node_id, last_heard, last_gateway, region_path)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT(node_id) DO UPDATE SET
+           last_heard   = GREATEST(EXCLUDED.last_heard,  mqtt_nodes.last_heard),
+           last_gateway = EXCLUDED.last_gateway,
+           region_path  = EXCLUDED.region_path`,
+        [nodeId, rxTime, gatewayId, regionPath]
       );
+      await this._emitNodeUpdate(nodeId, rxTime, gatewayId, regionPath, snr, hopsAway);
     }
   }
 
