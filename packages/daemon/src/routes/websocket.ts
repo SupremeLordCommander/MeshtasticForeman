@@ -5,6 +5,7 @@ import { clientCommandSchema } from "@foreman/shared";
 import { Types } from "@meshtastic/core";
 import type { DeviceManager } from "../device/device-manager.js";
 import type { MqttGateway } from "../mqtt/gateway.js";
+import type { PGlite } from "@electric-sql/pglite";
 
 /**
  * Single WebSocket endpoint at /ws
@@ -16,6 +17,7 @@ export async function registerWsRoute(
   app: FastifyInstance,
   deviceManager: DeviceManager,
   mqttGateway?: MqttGateway | null,
+  db?: PGlite,
 ) {
   const clients = new Set<WebSocket>();
   /** Sockets that have opted in to raw packet streaming */
@@ -93,7 +95,7 @@ export async function registerWsRoute(
         return;
       }
 
-      handleClientCommand(parsed, socket, deviceManager, packetSubscriptions, mqttGateway).catch((err) => {
+      handleClientCommand(parsed, socket, deviceManager, packetSubscriptions, mqttGateway, db).catch((err) => {
         console.error("[ws] command error:", err);
         socket.send(
           JSON.stringify({
@@ -118,6 +120,7 @@ async function handleClientCommand(
   deviceManager: DeviceManager,
   packetSubscriptions: Set<WebSocket>,
   mqttGateway?: MqttGateway | null,
+  db?: PGlite,
 ) {
   switch (command.type) {
     case "message:send": {
@@ -228,6 +231,37 @@ async function handleClientCommand(
           payload: { code: "NODE_UNREACHABLE", message: `Traceroute failed (${msg})`, nodeId },
         }));
       }
+      break;
+    }
+
+    case "node:remove": {
+      const { deviceId, nodeId } = command.payload;
+      const device = deviceManager.getDevice(deviceId);
+      if (!device) {
+        socket.send(JSON.stringify({
+          type: "error",
+          payload: { code: "DEVICE_NOT_FOUND", message: `No device with id ${deviceId}` },
+        }));
+        return;
+      }
+      try {
+        // Tell the radio to wipe this node from its nodeDB via AdminMessage over serial
+        await device.meshDevice.removeNodeByNum(nodeId);
+        console.log(`[ws] node:remove → ${device.name} removed !${nodeId.toString(16).padStart(8,"0")} from device nodeDB`);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[ws] node:remove serial failed for !${nodeId.toString(16).padStart(8,"0")}: ${msg}`);
+        // Don't abort — still clear our local cache below so the UI refreshes
+      }
+      // Always clear from daemon's local DB so stale data doesn't linger
+      if (db) {
+        await db.query("DELETE FROM nodes WHERE device_id = $1 AND node_id = $2", [deviceId, nodeId]);
+        console.log(`[ws] node:remove cleared !${nodeId.toString(16).padStart(8,"0")} from local DB`);
+      }
+      socket.send(JSON.stringify({
+        type: "node:removed",
+        payload: { nodeId },
+      } satisfies ServerEvent));
       break;
     }
 

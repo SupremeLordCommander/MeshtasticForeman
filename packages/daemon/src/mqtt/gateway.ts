@@ -63,6 +63,7 @@ interface DeviceState {
   cachedPosition: Protobuf.Mesh.Position | null;
   selfAnnounceTimer: NodeJS.Timeout | null;
   announceScheduled: boolean;              // prevents duplicate announce timers
+  lastRelayAnnounceMs: number;             // timestamp of last relay-triggered self-announce
 }
 
 // ---------------------------------------------------------------------------
@@ -164,6 +165,7 @@ export class MqttGateway extends EventEmitter {
       cachedPosition: null,
       selfAnnounceTimer: null,
       announceScheduled: false,
+      lastRelayAnnounceMs: 0,
     };
     this.devices.set(deviceId, state);
 
@@ -227,8 +229,14 @@ export class MqttGateway extends EventEmitter {
     meshDevice.events.onPositionPacket.subscribe((pkt: any) => {
       console.log(`[mqtt] positionPacket from=!${(pkt.from ?? 0).toString(16).padStart(8,"0")} stateNum=${state.gatewayId} latI=${pkt.data?.latitudeI ?? "none"}`);
       if (pkt.from === state.nodeNum) {
+        const hadPosition = !!state.cachedPosition;
         state.cachedPosition = pkt.data as Protobuf.Mesh.Position;
         console.log(`[mqtt] cached own position from positionPacket: lat=${pkt.data?.latitudeI / 1e7}`);
+        // Re-announce immediately if this is the first position fix — the initial
+        // self-announce fired before GPS was ready so remote instances missed our location.
+        if (!hadPosition && state.announceScheduled) {
+          this._publishSelf(deviceId).catch(console.error);
+        }
       }
     });
 
@@ -330,6 +338,18 @@ export class MqttGateway extends EventEmitter {
       ? ((Protobuf.Portnums.PortNum as Record<number, string>)[pkt.payloadVariant.value.portnum] ?? "?")
       : "encrypted";
     console.log(`[mqtt] pub  ${portnumName} from !${fromNum.toString(16).padStart(8,"0")} → ${topic}`);
+
+    // Piggyback a self-announce on relay traffic so remote app instances can see
+    // this gateway node without waiting for the 15-minute announce timer.
+    // Rate-limited to once per 5 minutes to avoid flooding the channel.
+    const RELAY_ANNOUNCE_INTERVAL_MS = 5 * 60 * 1000;
+    if (
+      state.cachedPosition &&
+      Date.now() - state.lastRelayAnnounceMs > RELAY_ANNOUNCE_INTERVAL_MS
+    ) {
+      state.lastRelayAnnounceMs = Date.now();
+      this._publishSelf(deviceId).catch(console.error);
+    }
   }
 
   // ---------------------------------------------------------------------------

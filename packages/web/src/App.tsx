@@ -1,20 +1,57 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { foremanClient } from "./ws/client.js";
-import type { DeviceInfo, NodeInfo, MqttNode } from "@foreman/shared";
+import type { DeviceInfo, NodeInfo, MqttNode, NodeOverride } from "@foreman/shared";
 import { NodesPage } from "./pages/NodesPage.js";
 import { MapPage } from "./pages/MapPage.js";
 import { RegionMapPage } from "./pages/RegionMapPage.js";
 import { MqttNodesPage } from "./pages/MqttNodesPage.js";
+import { NodeOverridesPage } from "./pages/NodeOverridesPage.js";
 import logo from "./assets/logo.png";
 
-type Tab = "nodes" | "map" | "region" | "mqtt";
+type Tab = "nodes" | "map" | "region" | "mqtt" | "overrides";
+
+/** Apply fallback lat/lon/altitude from overrides when the node has no GPS data. */
+function applyNodeOverrides<T extends { nodeId: number; latitude: number | null; longitude: number | null; altitude: number | null; longName?: string | null; shortName?: string | null }>(
+  nodes: T[],
+  overrides: Map<number, NodeOverride>,
+): T[] {
+  return nodes.map((n) => {
+    const ov = overrides.get(n.nodeId);
+    if (!ov) return n;
+    return {
+      ...n,
+      latitude:  n.latitude  ?? ov.latitude,
+      longitude: n.longitude ?? ov.longitude,
+      altitude:  n.altitude  ?? ov.altitude,
+      // Apply alias only when the node has no name of its own
+      longName:  ("longName" in n  ? n.longName  : null) ?? ov.aliasName ?? null,
+      shortName: ("shortName" in n ? n.shortName : null) ?? null,
+    };
+  });
+}
 
 export function App() {
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
   const [nodes, setNodes] = useState<NodeInfo[]>([]);
   const [mqttNodes, setMqttNodes] = useState<MqttNode[]>([]);
+  const [overrides, setOverrides] = useState<Map<number, NodeOverride>>(new Map());
   const [connected, setConnected] = useState(false);
   const [tab, setTab] = useState<Tab>("nodes");
+
+  const loadOverrides = useCallback(async () => {
+    try {
+      const res = await fetch("/api/node-overrides");
+      if (!res.ok) return;
+      const list: NodeOverride[] = await res.json();
+      setOverrides(new Map(list.map((o) => [o.nodeId, o])));
+    } catch {
+      // daemon may not be up yet — silently ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    loadOverrides();
+  }, [loadOverrides]);
 
   useEffect(() => {
     foremanClient.connect();
@@ -72,6 +109,27 @@ export function App() {
     };
   }, []);
 
+  // Merge override fallbacks before passing to pages
+  const effectiveNodes     = applyNodeOverrides(nodes,     overrides);
+  const effectiveMqttNodes = applyNodeOverrides(mqttNodes, overrides);
+
+  // Nodes that have no GPS data and no override with a location already configured —
+  // shown on the Overrides tab so the user can decide which to annotate.
+  const noLocationNodes: Array<{ nodeId: number; longName: string | null; shortName: string | null }> = (() => {
+    const seen = new Map<number, { nodeId: number; longName: string | null; shortName: string | null }>();
+    for (const n of nodes) {
+      if (n.latitude == null) seen.set(n.nodeId, { nodeId: n.nodeId, longName: n.longName, shortName: n.shortName });
+    }
+    for (const n of mqttNodes) {
+      if (n.latitude == null && !seen.has(n.nodeId)) seen.set(n.nodeId, { nodeId: n.nodeId, longName: n.longName, shortName: n.shortName });
+    }
+    // Remove nodes that already have a location override
+    for (const [id, ov] of overrides) {
+      if (ov.latitude != null) seen.delete(id);
+    }
+    return [...seen.values()].sort((a, b) => a.nodeId - b.nodeId);
+  })();
+
   return (
     <div style={styles.page}>
       <header style={styles.header}>
@@ -86,6 +144,9 @@ export function App() {
           <button style={tabStyle(tab === "mqtt")} onClick={() => setTab("mqtt")}>
             MQTT Nodes {mqttNodes.length > 0 && <span style={styles.tabCount}>{mqttNodes.length}</span>}
           </button>
+          <button style={tabStyle(tab === "overrides")} onClick={() => setTab("overrides")}>
+            Overrides {overrides.size > 0 && <span style={styles.tabCount}>{overrides.size}</span>}
+          </button>
         </nav>
         <span style={{ ...styles.badge, background: connected ? "#22c55e" : "#ef4444", marginLeft: "auto" }}>
           {connected ? "connected" : "disconnected"}
@@ -94,14 +155,23 @@ export function App() {
 
       {tab === "nodes" && (
         <div style={{ flex: 1, overflowY: "auto" }}>
-          <NodesPage devices={devices} nodes={nodes} />
+          <NodesPage devices={devices} nodes={effectiveNodes} />
         </div>
       )}
-      {tab === "map" && <MapPage nodes={nodes} />}
-      {tab === "region" && <RegionMapPage nodes={mqttNodes} />}
+      {tab === "map" && <MapPage nodes={effectiveNodes} />}
+      {tab === "region" && <RegionMapPage nodes={effectiveMqttNodes} />}
       {tab === "mqtt" && (
         <div style={{ flex: 1, overflowY: "auto" }}>
-          <MqttNodesPage nodes={mqttNodes} />
+          <MqttNodesPage nodes={effectiveMqttNodes} />
+        </div>
+      )}
+      {tab === "overrides" && (
+        <div style={{ flex: 1, overflowY: "auto" }}>
+          <NodeOverridesPage
+            overrides={[...overrides.values()]}
+            noLocationNodes={noLocationNodes}
+            onChanged={loadOverrides}
+          />
         </div>
       )}
     </div>

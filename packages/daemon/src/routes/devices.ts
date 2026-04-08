@@ -2,16 +2,26 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { DeviceManager } from "../device/device-manager.js";
 import type { MqttGateway } from "../mqtt/gateway.js";
+import type { PGlite } from "@electric-sql/pglite";
 
 const connectBodySchema = z.object({
   port: z.string().min(1),
   name: z.string().min(1),
 });
 
+const nodeOverrideBodySchema = z.object({
+  aliasName: z.string().max(64).nullable().optional(),
+  latitude:  z.number().min(-90).max(90).nullable().optional(),
+  longitude: z.number().min(-180).max(180).nullable().optional(),
+  altitude:  z.number().int().nullable().optional(),
+  notes:     z.string().max(512).nullable().optional(),
+});
+
 export async function registerDeviceRoutes(
   app: FastifyInstance,
   deviceManager: DeviceManager,
   mqttGateway?: MqttGateway | null,
+  db?: PGlite,
 ) {
   app.get("/api/devices", async () => {
     const rows = await deviceManager.listDevices();
@@ -41,6 +51,54 @@ export async function registerDeviceRoutes(
   app.delete("/api/devices/:id", async (req, reply) => {
     const { id } = req.params as { id: string };
     await deviceManager.disconnect(id);
+    return reply.status(204).send();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Node overrides — local fallback names/positions, never written to the mesh
+  // ---------------------------------------------------------------------------
+
+  app.get("/api/node-overrides", async () => {
+    if (!db) return [];
+    const { rows } = await db.query<{
+      node_id: number; alias_name: string | null;
+      latitude: number | null; longitude: number | null;
+      altitude: number | null; notes: string | null;
+    }>("SELECT node_id, alias_name, latitude, longitude, altitude, notes FROM node_overrides ORDER BY node_id");
+    return rows.map((r) => ({
+      nodeId: r.node_id, aliasName: r.alias_name,
+      latitude: r.latitude, longitude: r.longitude,
+      altitude: r.altitude, notes: r.notes,
+    }));
+  });
+
+  app.put("/api/node-overrides/:nodeId", async (req, reply) => {
+    if (!db) return reply.status(503).send({ error: "DB not available" });
+    const nodeId = Number((req.params as { nodeId: string }).nodeId);
+    if (!Number.isInteger(nodeId) || nodeId <= 0) {
+      return reply.status(400).send({ error: "Invalid nodeId" });
+    }
+    const result = nodeOverrideBodySchema.safeParse(req.body);
+    if (!result.success) return reply.status(400).send({ error: result.error.flatten() });
+    const { aliasName = null, latitude = null, longitude = null, altitude = null, notes = null } = result.data;
+    await db.query(
+      `INSERT INTO node_overrides(node_id, alias_name, latitude, longitude, altitude, notes)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       ON CONFLICT(node_id) DO UPDATE SET
+         alias_name = EXCLUDED.alias_name,
+         latitude   = EXCLUDED.latitude,
+         longitude  = EXCLUDED.longitude,
+         altitude   = EXCLUDED.altitude,
+         notes      = EXCLUDED.notes`,
+      [nodeId, aliasName, latitude, longitude, altitude, notes]
+    );
+    return { nodeId, aliasName, latitude, longitude, altitude, notes };
+  });
+
+  app.delete("/api/node-overrides/:nodeId", async (req, reply) => {
+    if (!db) return reply.status(503).send({ error: "DB not available" });
+    const nodeId = Number((req.params as { nodeId: string }).nodeId);
+    await db.query("DELETE FROM node_overrides WHERE node_id = $1", [nodeId]);
     return reply.status(204).send();
   });
 }
