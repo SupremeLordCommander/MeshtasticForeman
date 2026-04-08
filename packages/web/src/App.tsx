@@ -5,6 +5,7 @@ import { NodesPage } from "./pages/NodesPage.js";
 import { MapPage } from "./pages/MapPage.js";
 import { RegionMapPage } from "./pages/RegionMapPage.js";
 import { MqttNodesPage } from "./pages/MqttNodesPage.js";
+import logo from "./assets/logo.png";
 
 type Tab = "nodes" | "map" | "region" | "mqtt";
 
@@ -74,6 +75,7 @@ export function App() {
   return (
     <div style={styles.page}>
       <header style={styles.header}>
+        <img src={logo} alt="Meshtastic Foreman" style={styles.logo} />
         <h1 style={styles.title}>Meshtastic Foreman</h1>
         <nav style={styles.nav}>
           <button style={tabStyle(tab === "nodes")} onClick={() => setTab("nodes")}>Nodes</button>
@@ -150,6 +152,11 @@ const styles: Record<string, React.CSSProperties> = {
     gap: "1rem",
     padding: "1rem 2rem",
     borderBottom: "1px solid #1e293b",
+    flexShrink: 0,
+  },
+  logo: {
+    height: "2rem",
+    width: "auto",
     flexShrink: 0,
   },
   title: {
