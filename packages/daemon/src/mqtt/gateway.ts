@@ -104,11 +104,11 @@ export class MqttGateway extends EventEmitter {
       this.connected = true;
       console.log(`[mqtt] connected to ${this.cfg.broker}`);
 
-      // Subscribe county-wide: strip the city segment from rootTopic so we
-      // catch traffic from all cities (e.g. msh/US/CA/Humboldt/+/2/e/#)
+      // Subscribe state-wide: strip back to msh/{country}/{state} so we catch
+      // all counties and cities (e.g. msh/US/CA/+/+/2/e/#)
       const parts = this.cfg.rootTopic.split("/");
-      const countyTopic = parts.slice(0, -1).join("/");
-      const subTopic = `${countyTopic}/+/2/e/#`;
+      const stateTopic = parts.slice(0, 3).join("/"); // msh/US/CA
+      const subTopic = `${stateTopic}/+/+/2/e/#`;
       this.client!.subscribe(subTopic, (err) => {
         if (err) console.error("[mqtt] subscribe error:", err.message);
         else console.log(`[mqtt] subscribed to ${subTopic}`);
@@ -236,6 +236,12 @@ export class MqttGateway extends EventEmitter {
         // self-announce fired before GPS was ready so remote instances missed our location.
         if (!hadPosition && state.announceScheduled) {
           this._publishSelf(deviceId).catch(console.error);
+        }
+        // Recalculate distance_m for all known nodes now that our position changed
+        if (state.cachedPosition.latitudeI && state.cachedPosition.longitudeI) {
+          const lat = state.cachedPosition.latitudeI / 1e7;
+          const lon = state.cachedPosition.longitudeI / 1e7;
+          this._recalcAllDistances(lat, lon).catch(console.error);
         }
       }
     });
@@ -391,15 +397,16 @@ export class MqttGateway extends EventEmitter {
       const rxTime = new Date().toISOString();
       if (lat !== null && lon !== null && !(lat === 0 && lon === 0)) {
         await this.db.query(
-          `INSERT INTO mqtt_nodes(node_id, latitude, longitude, altitude, last_heard, last_gateway, region_path)
-           VALUES ($1,$2,$3,$4,$5,$6,$7)
+          `INSERT INTO mqtt_nodes(node_id, latitude, longitude, altitude, last_heard, last_gateway, region_path, distance_m)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,0)
            ON CONFLICT(node_id) DO UPDATE SET
              latitude     = EXCLUDED.latitude,
              longitude    = EXCLUDED.longitude,
              altitude     = COALESCE(EXCLUDED.altitude, mqtt_nodes.altitude),
              last_heard   = GREATEST(EXCLUDED.last_heard, mqtt_nodes.last_heard),
              last_gateway = EXCLUDED.last_gateway,
-             region_path  = EXCLUDED.region_path`,
+             region_path  = EXCLUDED.region_path,
+             distance_m   = 0`,
           [state.nodeNum, lat, lon, alt, rxTime, state.gatewayId, regionPath]
         );
         await this._emitNodeUpdate(state.nodeNum, rxTime, state.gatewayId, regionPath, null, null);
@@ -508,10 +515,10 @@ export class MqttGateway extends EventEmitter {
       hw_model: number | null; public_key: string | null; last_heard: string | null;
       latitude: number | null; longitude: number | null; altitude: number | null;
       last_gateway: string | null; region_path: string | null;
-      snr: number | null; hops_away: number | null;
+      snr: number | null; hops_away: number | null; distance_m: number | null;
     }>(
       `SELECT node_id, long_name, short_name, hw_model, public_key, last_heard,
-              latitude, longitude, altitude, last_gateway, region_path, snr, hops_away
+              latitude, longitude, altitude, last_gateway, region_path, snr, hops_away, distance_m
        FROM mqtt_nodes ORDER BY last_heard DESC NULLS LAST`
     );
     return rows.map((r) => ({
@@ -519,6 +526,7 @@ export class MqttGateway extends EventEmitter {
       hwModel: r.hw_model, publicKey: r.public_key, lastHeard: r.last_heard,
       latitude: r.latitude, longitude: r.longitude, altitude: r.altitude,
       lastGateway: r.last_gateway, regionPath: r.region_path, snr: r.snr, hopsAway: r.hops_away,
+      distanceM: r.distance_m,
     }));
   }
 
@@ -537,7 +545,8 @@ export class MqttGateway extends EventEmitter {
     const channelName = parts[eIdx + 1] ?? "LongFast";
     const gatewayId   = parts[eIdx + 2] ?? "unknown";
     // Region path = everything between "msh/" and "/2/e" e.g. "US/CA/Humboldt/Eureka"
-    const regionPath = parts.slice(1, eIdx - 1).join("/");
+    // Filter empty segments to handle topics without a city level (double-slash, e.g. msh/US/CA/CentralCoast//2/e/...)
+    const regionPath = parts.slice(1, eIdx - 1).filter(Boolean).join("/");
 
     console.log(`[mqtt] inbound topic=${topic} channel=${channelName} gw=${gatewayId} region=${regionPath}`);
 
@@ -639,9 +648,12 @@ export class MqttGateway extends EventEmitter {
         return;
       }
 
+      const own = this._getOwnLatLon();
+      const distM = own ? this._haversineMeters(own.lat, own.lon, lat, lon) : null;
+
       await this.db.query(
-        `INSERT INTO mqtt_nodes(node_id, latitude, longitude, altitude, last_heard, last_gateway, region_path, snr, hops_away)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+        `INSERT INTO mqtt_nodes(node_id, latitude, longitude, altitude, last_heard, last_gateway, region_path, snr, hops_away, distance_m)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
          ON CONFLICT(node_id) DO UPDATE SET
            latitude     = EXCLUDED.latitude,
            longitude    = EXCLUDED.longitude,
@@ -650,8 +662,9 @@ export class MqttGateway extends EventEmitter {
            last_gateway = EXCLUDED.last_gateway,
            region_path  = EXCLUDED.region_path,
            snr          = COALESCE(EXCLUDED.snr,         mqtt_nodes.snr),
-           hops_away    = COALESCE(EXCLUDED.hops_away,   mqtt_nodes.hops_away)`,
-        [nodeId, lat, lon, alt, rxTime, gatewayId, regionPath, snr, hopsAway]
+           hops_away    = COALESCE(EXCLUDED.hops_away,   mqtt_nodes.hops_away),
+           distance_m   = COALESCE(EXCLUDED.distance_m,  mqtt_nodes.distance_m)`,
+        [nodeId, lat, lon, alt, rxTime, gatewayId, regionPath, snr, hopsAway, distM]
       );
 
       // Also update the local mesh nodes table — MQTT is authoritative for position
@@ -684,9 +697,10 @@ export class MqttGateway extends EventEmitter {
       node_id: number; long_name: string | null; short_name: string | null;
       hw_model: number | null; public_key: string | null;
       latitude: number | null; longitude: number | null; altitude: number | null;
+      distance_m: number | null;
     }>(
       `SELECT node_id, long_name, short_name, hw_model, public_key,
-              latitude, longitude, altitude FROM mqtt_nodes WHERE node_id = $1`,
+              latitude, longitude, altitude, distance_m FROM mqtt_nodes WHERE node_id = $1`,
       [nodeId]
     );
     if (!rows[0]) return;
@@ -695,7 +709,7 @@ export class MqttGateway extends EventEmitter {
       nodeId: r.node_id, longName: r.long_name, shortName: r.short_name,
       hwModel: r.hw_model, publicKey: r.public_key, lastHeard: rxTime,
       latitude: r.latitude, longitude: r.longitude, altitude: r.altitude,
-      lastGateway: gatewayId, regionPath, snr, hopsAway,
+      lastGateway: gatewayId, regionPath, snr, hopsAway, distanceM: r.distance_m,
     };
     this.emit("mqtt_node:update", node);
   }
@@ -731,5 +745,82 @@ export class MqttGateway extends EventEmitter {
 
   private _randomPacketId(): number {
     return randomBytes(4).readUInt32LE(0);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Distance helpers
+  // ---------------------------------------------------------------------------
+
+  /** Haversine distance in metres between two lat/lon points. */
+  private _haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
+    const R = 6_371_000;
+    const φ1 = lat1 * Math.PI / 180;
+    const φ2 = lat2 * Math.PI / 180;
+    const Δφ = (lat2 - lat1) * Math.PI / 180;
+    const Δλ = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(Δφ / 2) ** 2 + Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  }
+
+  /** Returns the cached lat/lon of the first attached device that has a GPS fix. */
+  private _getOwnLatLon(): { lat: number; lon: number } | null {
+    for (const state of this.devices.values()) {
+      const pos = state.cachedPosition;
+      if (pos?.latitudeI && pos.longitudeI) {
+        return { lat: pos.latitudeI / 1e7, lon: pos.longitudeI / 1e7 };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Bulk-recalculate distance_m for every node with a known position.
+   * Called when our own GPS position changes so all rows stay current.
+   */
+  private async _recalcAllDistances(ownLat: number, ownLon: number): Promise<void> {
+    // Single SQL pass — haversine entirely in the database
+    await this.db.query(
+      `UPDATE mqtt_nodes SET distance_m = (
+         6371000.0 * 2.0 * atan2(
+           sqrt(
+             power(sin(radians((latitude  - $1) / 2.0)), 2) +
+             cos(radians($1)) * cos(radians(latitude)) *
+             power(sin(radians((longitude - $2) / 2.0)), 2)
+           ),
+           sqrt(1.0 - (
+             power(sin(radians((latitude  - $1) / 2.0)), 2) +
+             cos(radians($1)) * cos(radians(latitude)) *
+             power(sin(radians((longitude - $2) / 2.0)), 2)
+           ))
+         )
+       )
+       WHERE latitude IS NOT NULL AND longitude IS NOT NULL`,
+      [ownLat, ownLon]
+    );
+
+    // Emit an update for each repositioned node so connected clients reflect new distances
+    const { rows } = await this.db.query<{
+      node_id: number; long_name: string | null; short_name: string | null;
+      hw_model: number | null; public_key: string | null;
+      latitude: number | null; longitude: number | null; altitude: number | null;
+      last_heard: string | null; last_gateway: string | null; region_path: string | null;
+      snr: number | null; hops_away: number | null; distance_m: number | null;
+    }>(
+      `SELECT node_id, long_name, short_name, hw_model, public_key, last_heard,
+              latitude, longitude, altitude, last_gateway, region_path, snr, hops_away, distance_m
+       FROM mqtt_nodes WHERE latitude IS NOT NULL AND longitude IS NOT NULL`
+    );
+
+    for (const r of rows) {
+      const node: MqttNode = {
+        nodeId: r.node_id, longName: r.long_name, shortName: r.short_name,
+        hwModel: r.hw_model, publicKey: r.public_key, lastHeard: r.last_heard,
+        latitude: r.latitude, longitude: r.longitude, altitude: r.altitude,
+        lastGateway: r.last_gateway, regionPath: r.region_path,
+        snr: r.snr, hopsAway: r.hops_away, distanceM: r.distance_m,
+      };
+      this.emit("mqtt_node:update", node);
+    }
+    console.log(`[mqtt] recalculated distances for ${rows.length} nodes`);
   }
 }

@@ -20,6 +20,12 @@ function nodeHex(nodeId: number): string {
   return `!${nodeId.toString(16).padStart(8, "0")}`;
 }
 
+function formatDistance(distanceM: number | null): string {
+  if (distanceM === null) return "—";
+  if (distanceM < 1000) return `${Math.round(distanceM)} m`;
+  return `${(distanceM / 1000).toFixed(1)} km`;
+}
+
 function formatHops(hopsAway: number | null): string {
   if (hopsAway === null) return "—";
   if (hopsAway === 0) return "Direct";
@@ -99,7 +105,7 @@ function filterNodes(list: MergedNode[], query: string): MergedNode[] {
 // Sorting
 // ---------------------------------------------------------------------------
 
-type SortCol = "name" | "id" | "connection" | "lastHeard" | "snr" | "model" | "location";
+type SortCol = "name" | "id" | "connection" | "lastHeard" | "snr" | "model" | "location" | "distance";
 
 function sortMerged(list: MergedNode[], col: SortCol, dir: "asc" | "desc"): MergedNode[] {
   return [...list].sort((a, b) => {
@@ -144,6 +150,12 @@ function sortMerged(list: MergedNode[], col: SortCol, dir: "asc" | "desc"): Merg
         cmp = la - lb;
         break;
       }
+      case "distance": {
+        const da = a.mqtt?.distanceM ?? Infinity;
+        const db = b.mqtt?.distanceM ?? Infinity;
+        cmp = da - db;
+        break;
+      }
     }
     return dir === "asc" ? cmp : -cmp;
   });
@@ -173,8 +185,8 @@ export function NodesPage({ devices, nodes, mqttNodes }: Props) {
   const [traceroutes, setTraceroutes] = useState<Record<number, TracerouteResult>>({});
   const [confirmRemove, setConfirmRemove] = useState<number | null>(null);
   const [filter, setFilter] = useState("");
-  const [sortCol, setSortCol] = useState<SortCol>("lastHeard");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  const [sortCol, setSortCol] = useState<SortCol>("distance");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
 
   useEffect(() => {
     const off = foremanClient.on((event) => {
@@ -200,7 +212,7 @@ export function NodesPage({ devices, nodes, mqttNodes }: Props) {
       setSortDir((d) => (d === "asc" ? "desc" : "asc"));
     } else {
       setSortCol(col);
-      setSortDir(col === "name" || col === "model" || col === "id" ? "asc" : "desc");
+      setSortDir(col === "name" || col === "model" || col === "id" || col === "distance" ? "asc" : "desc");
     }
   }
 
@@ -238,7 +250,7 @@ export function NodesPage({ devices, nodes, mqttNodes }: Props) {
   const mqttOnly = apply(filtered.filter((n) => !n.mesh && n.mqtt));
 
   const totalUnique = nodes.length + allMerged.filter((n) => !n.mesh && n.mqtt).length;
-  const colCount = deviceId ? 8 : 7;
+  const colCount = deviceId ? 9 : 8;
   const isEmpty = nodes.length === 0 && mqttNodes.length === 0;
   const noResults = !isEmpty && filtered.length === 0;
 
@@ -320,6 +332,7 @@ export function NodesPage({ devices, nodes, mqttNodes }: Props) {
                   <SortableHeader col="lastHeard"  label="Last Heard"  {...sharedHeaderProps} />
                   <SortableHeader col="snr"        label="SNR"         {...sharedHeaderProps} />
                   <SortableHeader col="model"      label="Model"       {...sharedHeaderProps} />
+                  <SortableHeader col="distance"   label="Distance"    {...sharedHeaderProps} />
                   <SortableHeader col="location"   label="Location"    {...sharedHeaderProps} />
                   {deviceId && <th style={styles.th}>Actions</th>}
                 </tr>
@@ -440,7 +453,7 @@ function NodeRows({
   const key = String(nodeId);
   const isPending = !!pending[key];
   const trResult = traceroutes[nodeId];
-  const colCount = deviceId ? 8 : 7;
+  const colCount = deviceId ? 9 : 8;
   const primary = mesh ?? mqtt!;
   const isMqttOnly = !mesh;
 
@@ -467,6 +480,7 @@ function NodeRows({
         <td style={styles.td}>{formatLastHeard(primary.lastHeard)}</td>
         <td style={styles.td}>{primary.snr != null ? `${primary.snr.toFixed(1)} dB` : "—"}</td>
         <td style={styles.td}>{hwModel(primary.hwModel)}</td>
+        <td style={styles.td}>{formatDistance(mqtt?.distanceM ?? null)}</td>
         <td style={{ ...styles.td, ...styles.mono }}>
           {primary.latitude != null && primary.longitude != null
             ? `${primary.latitude.toFixed(5)}, ${primary.longitude.toFixed(5)}`

@@ -87,6 +87,7 @@ export interface MqttNode {
   regionPath: string | null;
   snr: number | null;
   hopsAway: number | null;
+  distanceM: number | null;
 }
 
 export interface Waypoint {
