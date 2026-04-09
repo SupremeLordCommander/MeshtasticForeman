@@ -33,6 +33,10 @@ export class DeviceManager extends EventEmitter {
   /** Ports with a pending reconnect timer — prevents stacked reconnect loops */
   private reconnectingPorts = new Set<string>();
   private mqttGateway: MqttGateway | null = null;
+  /** Last time each device received any mesh packet (for watchdog) */
+  private lastPacketMs = new Map<string, number>();
+  /** Active watchdog timers */
+  private watchdogTimers = new Map<string, NodeJS.Timeout>();
 
   constructor(private readonly db: PGlite) {
     super();
@@ -139,7 +143,16 @@ export class DeviceManager extends EventEmitter {
     });
 
     meshDevice.events.onDeviceStatus.subscribe((status: Types.DeviceStatusEnum) => {
+      console.log(`[devices] status ${name} → ${Types.DeviceStatusEnum[status] ?? status}`);
       this._handleDeviceStatus(id, name, port, status);
+    });
+
+    // Diagnostic: log every FromRadio frame so we know if the stream is alive
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    meshDevice.events.onFromRadio.subscribe((msg: any) => {
+      const variant = msg?.payloadVariant?.case ?? "unknown";
+      if (variant === "packet") return; // already handled by onMeshPacket
+      console.log(`[devices] fromRadio ${name} variant=${variant}`);
     });
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -171,10 +184,21 @@ export class DeviceManager extends EventEmitter {
     this.mqttGateway?.attachDevice(id, meshDevice);
 
     // Send configure request — device will begin streaming its config back
+    console.log(`[devices] configure start ${name}`);
     await meshDevice.configure();
+    console.log(`[devices] configure done ${name}`);
+
+    // Send periodic heartbeats so the serial link stays alive indefinitely.
+    // Without this the Meshtastic firmware stops forwarding packets to the host.
+    meshDevice.setHeartbeatInterval(30_000);
 
     this._emitStatus(id, name, port, "connected", connectedAt);
     console.log(`[devices] connected ${name} on ${port} (id=${id})`);
+
+    // Watchdog: if we receive zero mesh packets for 90 s after configure, re-run
+    // configure().  This recovers from the rare case where the device's serial
+    // stream silently stops delivering packets after the initial handshake.
+    this._startPacketWatchdog(id, name, meshDevice);
 
     return device;
   }
@@ -293,6 +317,43 @@ export class DeviceManager extends EventEmitter {
   // Private helpers
   // ---------------------------------------------------------------------------
 
+  /**
+   * Starts a watchdog that re-runs configure() if no mesh packet is received
+   * within 90 s of the last packet (or since configure completed).
+   * This recovers silently when the Meshtastic serial stream stalls.
+   */
+  private _startPacketWatchdog(deviceId: string, name: string, meshDevice: MeshDevice): void {
+    this.lastPacketMs.set(deviceId, Date.now());
+
+    const INTERVAL = 45_000;   // check every 45 s
+    const STALE_MS = 90_000;   // re-configure if silent for 90 s
+
+    const existing = this.watchdogTimers.get(deviceId);
+    if (existing) clearInterval(existing);
+
+    const timer = setInterval(async () => {
+      if (!this.devices.has(deviceId)) {
+        clearInterval(timer);
+        this.watchdogTimers.delete(deviceId);
+        return;
+      }
+      const last = this.lastPacketMs.get(deviceId) ?? 0;
+      const silentMs = Date.now() - last;
+      if (silentMs >= STALE_MS) {
+        console.log(`[devices] watchdog: ${name} silent for ${Math.round(silentMs / 1000)}s — re-running configure()`);
+        this.lastPacketMs.set(deviceId, Date.now()); // prevent hammering
+        try {
+          await meshDevice.configure();
+          console.log(`[devices] watchdog: configure() done for ${name}`);
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(`[devices] watchdog: configure() failed for ${name}: ${msg}`);
+        }
+      }
+    }, INTERVAL);
+    this.watchdogTimers.set(deviceId, timer);
+  }
+
   private _emitStatus(
     id: string,
     name: string,
@@ -323,6 +384,9 @@ export class DeviceManager extends EventEmitter {
     status: Types.DeviceStatusEnum
   ) {
     if (status === Types.DeviceStatusEnum.DeviceDisconnected) {
+      // Stop watchdog — reconnect will start a fresh one
+      const wt = this.watchdogTimers.get(deviceId);
+      if (wt) { clearInterval(wt); this.watchdogTimers.delete(deviceId); }
       this.devices.delete(deviceId);
       this._emitStatus(deviceId, name, port, "disconnected");
       console.log(`[devices] ${name} disconnected — scheduling reconnect in 5s`);
@@ -406,6 +470,8 @@ export class DeviceManager extends EventEmitter {
     // Keep node last_heard fresh on every received packet, not just nodeinfo
     const fromNodeId: number = p.from ?? 0;
     const isMqttEcho = p.viaMqtt ?? false;
+    // Update watchdog timestamp so it knows the stream is alive
+    this.lastPacketMs.set(deviceId, Date.now());
     console.log(`[devices] raw pkt from=!${fromNodeId.toString(16).padStart(8,"0")} portnum=${portnumName} viaMqtt=${isMqttEcho}`);
     if (fromNodeId !== 0) {
       activityLog.add({

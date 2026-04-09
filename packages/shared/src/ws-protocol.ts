@@ -8,6 +8,7 @@ import type {
   Channel,
   Waypoint,
   ActivityEntry,
+  LogEntry,
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -31,6 +32,9 @@ export type ServerEvent =
   | { type: "node:removed"; payload: { nodeId: number } }
   | { type: "activity:entry"; payload: ActivityEntry }
   | { type: "activity:snapshot"; payload: ActivityEntry[] }
+  | { type: "log:entry"; payload: LogEntry }
+  | { type: "log:snapshot"; payload: LogEntry[] }
+  | { type: "mqtt:status"; payload: { enabled: boolean } }
   | { type: "error"; payload: { code: string; message: string } };
 
 // ---------------------------------------------------------------------------
@@ -103,6 +107,11 @@ export const removeNodeSchema = z.object({
   }),
 });
 
+export const mqttToggleSchema = z.object({
+  type: z.literal("mqtt:toggle"),
+  payload: z.object({ enabled: z.boolean() }),
+});
+
 export const clientCommandSchema = z.discriminatedUnion("type", [
   sendMessageSchema,
   subscribePacketsSchema,
@@ -112,6 +121,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   requestPositionSchema,
   requestTracerouteSchema,
   removeNodeSchema,
+  mqttToggleSchema,
 ]);
 
 export type ClientCommand = z.infer<typeof clientCommandSchema>;

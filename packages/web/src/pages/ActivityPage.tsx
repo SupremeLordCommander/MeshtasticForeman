@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import type { ActivityEntry } from "@foreman/shared";
 
 // ---------------------------------------------------------------------------
@@ -82,6 +82,7 @@ interface Props {
 
 export function ActivityPage({ entries }: Props) {
   const [window, setWindow] = useState<Window>("15m");
+  const [sourceFilter, setSourceFilter] = useState<"all" | "mesh" | "mqtt">("all");
   const [paused, setPaused] = useState(false);
   const [frozen, setFrozen] = useState<ActivityEntry[]>([]);
   const feedRef = useRef<HTMLDivElement>(null);
@@ -92,7 +93,16 @@ export function ActivityPage({ entries }: Props) {
     if (!paused) setFrozen([]);
   }, [paused]);
 
-  const displayEntries = paused ? frozen : filterWindow(entries, window);
+  const applySource = (list: ActivityEntry[]) =>
+    sourceFilter === "all" ? list : list.filter((e) => e.source === sourceFilter);
+
+  // useMemo ensures sourceFilter is always the current value even when entries
+  // and sourceFilter update in the same React batch (concurrent mode batching).
+  const displayEntries = useMemo(
+    () => applySource(paused ? frozen : filterWindow(entries, window)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [entries, window, paused, frozen, sourceFilter],
+  );
 
   // Auto-scroll feed to bottom when new entries arrive
   useEffect(() => {
@@ -101,7 +111,11 @@ export function ActivityPage({ entries }: Props) {
     }
   }, [displayEntries.length, paused]);
 
-  const windowed = filterWindow(entries, window);
+  const windowed = useMemo(
+    () => applySource(filterWindow(entries, window)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [entries, window, sourceFilter],
+  );
   const meshCount = windowed.filter((e) => e.source === "mesh").length;
   const mqttCount = windowed.filter((e) => e.source === "mqtt").length;
   const total     = windowed.length;
@@ -120,6 +134,14 @@ export function ActivityPage({ entries }: Props) {
         {(["5m", "15m", "1h", "all"] as Window[]).map((w) => (
           <button key={w} style={{ ...styles.btn, ...(window === w ? styles.btnActive : {}) }}
             onClick={() => setWindow(w)}>{w}</button>
+        ))}
+        <span style={{ marginLeft: "0.5rem", color: "#64748b", fontSize: "0.75rem" }}>Source:</span>
+        {(["all", "mesh", "mqtt"] as const).map((s) => (
+          <button key={s} style={{ ...styles.btn, ...(sourceFilter === s ? styles.btnActive : {}),
+            ...(s === "mesh" ? { color: sourceFilter === s ? "#fff" : "#60a5fa" } : {}),
+            ...(s === "mqtt" ? { color: sourceFilter === s ? "#fff" : "#34d399" } : {}),
+          }}
+            onClick={() => setSourceFilter(s)}>{s}</button>
         ))}
         <span style={{ marginLeft: "1rem", color: "#475569", fontSize: "0.75rem" }}>
           {total} packets
@@ -151,7 +173,7 @@ export function ActivityPage({ entries }: Props) {
             onMouseEnter={() => { autoScroll.current = false; }}
             onMouseLeave={() => { autoScroll.current = true; }}
           >
-            {[...displayEntries].reverse().map((e) => (
+            {displayEntries.map((e) => (
               <div key={e.id} style={styles.feedRow}>
                 <span style={styles.feedTime}>{formatTime(e.ts)}</span>
                 <span style={{ ...styles.feedSource, color: sourceColor(e.source) }}>{e.source}</span>
@@ -200,7 +222,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   feed: {
     flex: 1, overflowY: "auto", fontFamily: "monospace", fontSize: "0.75rem",
-    display: "flex", flexDirection: "column-reverse",
+    display: "flex", flexDirection: "column",
   },
   feedRow:    { display: "flex", gap: "0.6rem", padding: "0.15rem 0", alignItems: "center", borderBottom: "1px solid #0f172a" },
   feedTime:   { color: "#475569", flexShrink: 0, width: "5.5rem" },

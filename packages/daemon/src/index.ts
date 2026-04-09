@@ -7,6 +7,7 @@ import { join, dirname } from "node:path";
 
 import { db } from "./db/client.js";
 import { runMigrations } from "./db/migrations.js";
+import { consoleLog } from "./activity/console-log.js";
 import { DeviceManager } from "./device/device-manager.js";
 import { MqttGateway } from "./mqtt/gateway.js";
 import { registerDeviceRoutes } from "./routes/devices.js";
@@ -18,6 +19,10 @@ const PORT = Number(process.env.PORT ?? 3750);
 const HOST = process.env.HOST ?? "0.0.0.0";
 
 async function main() {
+  // Capture all console.log/warn/error into the in-memory ring buffer
+  // before anything else logs, so no lines are missed.
+  consoleLog.install();
+
   // 1. Database
   await runMigrations(db);
   console.log("[db] migrations complete");

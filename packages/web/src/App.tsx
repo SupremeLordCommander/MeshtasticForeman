@@ -1,13 +1,14 @@
 import { useEffect, useState, useCallback } from "react";
 import { foremanClient } from "./ws/client.js";
-import type { DeviceInfo, NodeInfo, MqttNode, NodeOverride, ActivityEntry } from "@foreman/shared";
+import type { DeviceInfo, NodeInfo, MqttNode, NodeOverride, ActivityEntry, LogEntry } from "@foreman/shared";
 import { NodesPage } from "./pages/NodesPage.js";
 import { MapPage } from "./pages/MapPage.js";
 import { NodeOverridesPage } from "./pages/NodeOverridesPage.js";
 import { ActivityPage } from "./pages/ActivityPage.js";
+import { LogsPage } from "./pages/LogsPage.js";
 import logo from "./assets/logo.png";
 
-type Tab = "nodes" | "map" | "activity" | "overrides";
+type Tab = "nodes" | "map" | "activity" | "logs" | "overrides";
 
 /** Apply fallback lat/lon/altitude from overrides when the node has no GPS data. */
 function applyNodeOverrides<T extends { nodeId: number; latitude: number | null; longitude: number | null; altitude: number | null; longName?: string | null; shortName?: string | null }>(
@@ -35,6 +36,8 @@ export function App() {
   const [mqttNodes, setMqttNodes] = useState<MqttNode[]>([]);
   const [overrides, setOverrides] = useState<Map<number, NodeOverride>>(new Map());
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [mqttEnabled, setMqttEnabled] = useState(false);
   const [connected, setConnected] = useState(false);
   const [tab, setTab] = useState<Tab>("nodes");
 
@@ -109,6 +112,18 @@ export function App() {
           return next.length > 500 ? next.slice(next.length - 500) : next;
         });
       }
+      if (event.type === "log:snapshot") {
+        setLogs(event.payload);
+      }
+      if (event.type === "log:entry") {
+        setLogs((prev) => {
+          const next = [...prev, event.payload];
+          return next.length > 500 ? next.slice(next.length - 500) : next;
+        });
+      }
+      if (event.type === "mqtt:status") {
+        setMqttEnabled(event.payload.enabled);
+      }
     });
 
     return () => {
@@ -117,6 +132,10 @@ export function App() {
       setConnected(false);
     };
   }, []);
+
+  const toggleMqtt = useCallback(() => {
+    foremanClient.send({ type: "mqtt:toggle", payload: { enabled: !mqttEnabled } });
+  }, [mqttEnabled]);
 
   // Merge override fallbacks before passing to pages
   const effectiveNodes     = applyNodeOverrides(nodes,     overrides);
@@ -150,11 +169,30 @@ export function App() {
           <button style={tabStyle(tab === "activity")} onClick={() => setTab("activity")}>
             Activity {activity.length > 0 && <span style={styles.tabCount}>{activity.length}</span>}
           </button>
+          <button style={tabStyle(tab === "logs")} onClick={() => setTab("logs")}>
+            Logs {logs.length > 0 && <span style={styles.tabCount}>{logs.length}</span>}
+          </button>
           <button style={tabStyle(tab === "overrides")} onClick={() => setTab("overrides")}>
             Overrides {overrides.size > 0 && <span style={styles.tabCount}>{overrides.size}</span>}
           </button>
         </nav>
-        <span style={{ ...styles.badge, background: connected ? "#22c55e" : "#ef4444", marginLeft: "auto" }}>
+        <button
+          onClick={toggleMqtt}
+          style={{
+            marginLeft: "auto",
+            background: mqttEnabled ? "#166534" : "#1e293b",
+            border: `1px solid ${mqttEnabled ? "#16a34a" : "#ef4444"}`,
+            color: mqttEnabled ? "#4ade80" : "#f87171",
+            padding: "0.2rem 0.7rem",
+            borderRadius: "0.25rem",
+            cursor: "pointer",
+            fontSize: "0.75rem",
+            fontFamily: "monospace",
+          }}
+        >
+          MQTT {mqttEnabled ? "ON" : "OFF"}
+        </button>
+        <span style={{ ...styles.badge, background: connected ? "#22c55e" : "#ef4444" }}>
           {connected ? "connected" : "disconnected"}
         </span>
       </header>
@@ -168,6 +206,11 @@ export function App() {
       {tab === "activity" && (
         <div style={{ flex: 1, overflowY: "auto" }}>
           <ActivityPage entries={activity} />
+        </div>
+      )}
+      {tab === "logs" && (
+        <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+          <LogsPage entries={logs} />
         </div>
       )}
       {tab === "overrides" && (

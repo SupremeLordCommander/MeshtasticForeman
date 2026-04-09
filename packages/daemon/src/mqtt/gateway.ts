@@ -147,9 +147,19 @@ export class MqttGateway extends EventEmitter {
 
   stop(): void {
     for (const [, state] of this.devices) {
-      if (state.selfAnnounceTimer) clearInterval(state.selfAnnounceTimer);
+      if (state.selfAnnounceTimer) {
+        clearInterval(state.selfAnnounceTimer);
+        state.selfAnnounceTimer = null;
+      }
     }
-    this.client?.end();
+    this.client?.end(true);  // force-close so reconnectPeriod doesn't restart it
+    this.client = null;
+    this.connected = false;
+    console.log("[mqtt] stopped");
+  }
+
+  get isRunning(): boolean {
+    return this.client !== null;
   }
 
   // ---------------------------------------------------------------------------
