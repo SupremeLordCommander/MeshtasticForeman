@@ -7,6 +7,7 @@ import type {
   Packet,
   Channel,
   Waypoint,
+  ActivityEntry,
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -28,6 +29,8 @@ export type ServerEvent =
   | { type: "mqtt_node:list"; payload: MqttNode[] }
   | { type: "traceroute:result"; payload: { nodeId: number; route: number[]; routeBack: number[] } }
   | { type: "node:removed"; payload: { nodeId: number } }
+  | { type: "activity:entry"; payload: ActivityEntry }
+  | { type: "activity:snapshot"; payload: ActivityEntry[] }
   | { type: "error"; payload: { code: string; message: string } };
 
 // ---------------------------------------------------------------------------

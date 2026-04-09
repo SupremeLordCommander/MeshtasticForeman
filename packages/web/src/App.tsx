@@ -1,12 +1,13 @@
 import { useEffect, useState, useCallback } from "react";
 import { foremanClient } from "./ws/client.js";
-import type { DeviceInfo, NodeInfo, MqttNode, NodeOverride } from "@foreman/shared";
+import type { DeviceInfo, NodeInfo, MqttNode, NodeOverride, ActivityEntry } from "@foreman/shared";
 import { NodesPage } from "./pages/NodesPage.js";
 import { MapPage } from "./pages/MapPage.js";
 import { NodeOverridesPage } from "./pages/NodeOverridesPage.js";
+import { ActivityPage } from "./pages/ActivityPage.js";
 import logo from "./assets/logo.png";
 
-type Tab = "nodes" | "map" | "overrides";
+type Tab = "nodes" | "map" | "activity" | "overrides";
 
 /** Apply fallback lat/lon/altitude from overrides when the node has no GPS data. */
 function applyNodeOverrides<T extends { nodeId: number; latitude: number | null; longitude: number | null; altitude: number | null; longName?: string | null; shortName?: string | null }>(
@@ -33,6 +34,7 @@ export function App() {
   const [nodes, setNodes] = useState<NodeInfo[]>([]);
   const [mqttNodes, setMqttNodes] = useState<MqttNode[]>([]);
   const [overrides, setOverrides] = useState<Map<number, NodeOverride>>(new Map());
+  const [activity, setActivity] = useState<ActivityEntry[]>([]);
   const [connected, setConnected] = useState(false);
   const [tab, setTab] = useState<Tab>("nodes");
 
@@ -98,6 +100,15 @@ export function App() {
           return sortMqttNodes(updated);
         });
       }
+      if (event.type === "activity:snapshot") {
+        setActivity(event.payload);
+      }
+      if (event.type === "activity:entry") {
+        setActivity((prev) => {
+          const next = [...prev, event.payload];
+          return next.length > 500 ? next.slice(next.length - 500) : next;
+        });
+      }
     });
 
     return () => {
@@ -136,6 +147,9 @@ export function App() {
         <nav style={styles.nav}>
           <button style={tabStyle(tab === "nodes")} onClick={() => setTab("nodes")}>Nodes</button>
           <button style={tabStyle(tab === "map")} onClick={() => setTab("map")}>Map</button>
+          <button style={tabStyle(tab === "activity")} onClick={() => setTab("activity")}>
+            Activity {activity.length > 0 && <span style={styles.tabCount}>{activity.length}</span>}
+          </button>
           <button style={tabStyle(tab === "overrides")} onClick={() => setTab("overrides")}>
             Overrides {overrides.size > 0 && <span style={styles.tabCount}>{overrides.size}</span>}
           </button>
@@ -151,6 +165,11 @@ export function App() {
         </div>
       )}
       {tab === "map" && <MapPage nodes={effectiveNodes} mqttNodes={effectiveMqttNodes} />}
+      {tab === "activity" && (
+        <div style={{ flex: 1, overflowY: "auto" }}>
+          <ActivityPage entries={activity} />
+        </div>
+      )}
       {tab === "overrides" && (
         <div style={{ flex: 1, overflowY: "auto" }}>
           <NodeOverridesPage

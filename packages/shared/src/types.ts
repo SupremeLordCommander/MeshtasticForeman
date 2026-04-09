@@ -101,6 +101,17 @@ export interface Waypoint {
   expire: string | null;
 }
 
+export interface ActivityEntry {
+  id: number;           // monotonic sequence number
+  ts: string;           // ISO timestamp
+  source: "mesh" | "mqtt";
+  portnum: string;      // e.g. "POSITION_APP", "TELEMETRY_APP"
+  fromHex: string;      // "!43577e14"
+  region: string | null;   // MQTT only
+  gateway: string | null;  // MQTT only
+  viaMqtt: boolean;        // mesh: was packet a downlink echo
+}
+
 export interface NodeOverride {
   nodeId: number;
   aliasName: string | null;

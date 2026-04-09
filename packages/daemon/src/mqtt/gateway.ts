@@ -18,6 +18,7 @@ import { create, toBinary, fromBinary } from "@bufbuild/protobuf";
 import { MeshDevice, Types, Protobuf } from "@meshtastic/core";
 import type { PGlite } from "@electric-sql/pglite";
 import type { MqttNode } from "@foreman/shared";
+import { activityLog } from "../activity/log.js";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -104,11 +105,13 @@ export class MqttGateway extends EventEmitter {
       this.connected = true;
       console.log(`[mqtt] connected to ${this.cfg.broker}`);
 
-      // Subscribe state-wide: strip back to msh/{country}/{state} so we catch
-      // all counties and cities (e.g. msh/US/CA/+/+/2/e/#)
+      // Subscribe to everything under msh/{country}/{state}/#
+      // Regions use inconsistent depths (centralvalley = 4 levels, Humboldt/Eureka = 5 levels,
+      // CentralCoast// = 5 levels with empty city) so a fixed +/+/2/e/# pattern misses some.
+      // _handleInbound already finds 2/e by searching, so a broad # subscription is safe.
       const parts = this.cfg.rootTopic.split("/");
       const stateTopic = parts.slice(0, 3).join("/"); // msh/US/CA
-      const subTopic = `${stateTopic}/+/+/2/e/#`;
+      const subTopic = `${stateTopic}/#`;
       this.client!.subscribe(subTopic, (err) => {
         if (err) console.error("[mqtt] subscribe error:", err.message);
         else console.log(`[mqtt] subscribed to ${subTopic}`);
@@ -591,12 +594,22 @@ export class MqttGateway extends EventEmitter {
       return;
     }
 
-    const portname = (Protobuf.Portnums.PortNum as Record<number, string>)[data.portnum] ?? data.portnum;
+    const portname = (Protobuf.Portnums.PortNum as Record<number, string>)[data.portnum] ?? String(data.portnum);
     console.log(`[mqtt] inbound decoded portnum=${portname} from=!${fromNum.toString(16).padStart(8,"0")}`);
 
     const rxTime = pkt.rxTime && pkt.rxTime > 0
       ? new Date(pkt.rxTime * 1000).toISOString()
       : new Date().toISOString();
+
+    activityLog.add({
+      ts: rxTime,
+      source: "mqtt",
+      portnum: portname,
+      fromHex: `!${fromNum.toString(16).padStart(8, "0")}`,
+      region: regionPath || null,
+      gateway: gatewayId || null,
+      viaMqtt: false,
+    });
 
     await this._upsertFromData(fromNum, data, rxTime, gatewayId, regionPath,
       pkt.rxSnr ?? null, pkt.hopLimit ?? null);

@@ -6,6 +6,7 @@ import type { ServerEvent, Message, NodeInfo } from "@foreman/shared";
 import { MeshDevice, Types, Protobuf } from "@meshtastic/core";
 import { TransportNodeSerial } from "@meshtastic/transport-node-serial";
 import type { MqttGateway } from "../mqtt/gateway.js";
+import { activityLog } from "../activity/log.js";
 
 export interface ConnectedDevice {
   id: string;
@@ -404,38 +405,52 @@ export class DeviceManager extends EventEmitter {
 
     // Keep node last_heard fresh on every received packet, not just nodeinfo
     const fromNodeId: number = p.from ?? 0;
+    const isMqttEcho = p.viaMqtt ?? false;
+    console.log(`[devices] raw pkt from=!${fromNodeId.toString(16).padStart(8,"0")} portnum=${portnumName} viaMqtt=${isMqttEcho}`);
     if (fromNodeId !== 0) {
-      const updateResult = await this.db.query(
-        `UPDATE nodes SET last_heard = $1
-         WHERE device_id = $2 AND node_id = $3 AND (last_heard IS NULL OR last_heard < $1)`,
-        [rxTime, deviceId, fromNodeId]
+      activityLog.add({
+        ts: rxTime,
+        source: "mesh",
+        portnum: portnumName,
+        fromHex: `!${fromNodeId.toString(16).padStart(8, "0")}`,
+        region: null,
+        gateway: null,
+        viaMqtt: isMqttEcho,
+      });
+    }
+    if (fromNodeId !== 0) {
+      // Upsert so a node we hear packets from is always tracked, even before nodeinfo arrives
+      await this.db.query(
+        `INSERT INTO nodes(node_id, device_id, last_heard)
+         VALUES ($1, $2, $3)
+         ON CONFLICT(node_id, device_id) DO UPDATE SET
+           last_heard = GREATEST(EXCLUDED.last_heard, nodes.last_heard)`,
+        [fromNodeId, deviceId, rxTime]
       );
-      // Emit node:update so frontend timestamp refreshes live
-      if ((updateResult.affectedRows ?? updateResult.rows?.length ?? 1) >= 0) {
-        const { rows } = await this.db.query<{
-          node_id: number; long_name: string | null; short_name: string | null;
-          mac_address: string | null; hw_model: number | null; public_key: string | null;
-          snr: number | null; hops_away: number | null;
-          latitude: number | null; longitude: number | null; altitude: number | null;
-        }>(
-          `SELECT node_id, long_name, short_name, mac_address, hw_model, public_key,
-                  snr, hops_away, latitude, longitude, altitude
-           FROM nodes WHERE device_id = $1 AND node_id = $2`,
-          [deviceId, fromNodeId]
-        );
-        if (rows[0]) {
-          const r = rows[0];
-          const nodeEvent: ServerEvent = {
-            type: "node:update",
-            payload: {
-              nodeId: r.node_id, longName: r.long_name, shortName: r.short_name,
-              macAddress: r.mac_address, hwModel: r.hw_model, publicKey: r.public_key,
-              lastHeard: rxTime, snr: r.snr, hopsAway: r.hops_away,
-              latitude: r.latitude, longitude: r.longitude, altitude: r.altitude,
-            },
-          };
-          this.emit("event", nodeEvent);
-        }
+
+      const { rows } = await this.db.query<{
+        node_id: number; long_name: string | null; short_name: string | null;
+        mac_address: string | null; hw_model: number | null; public_key: string | null;
+        snr: number | null; hops_away: number | null;
+        latitude: number | null; longitude: number | null; altitude: number | null;
+      }>(
+        `SELECT node_id, long_name, short_name, mac_address, hw_model, public_key,
+                snr, hops_away, latitude, longitude, altitude
+         FROM nodes WHERE device_id = $1 AND node_id = $2`,
+        [deviceId, fromNodeId]
+      );
+      if (rows[0]) {
+        const r = rows[0];
+        const nodeEvent: ServerEvent = {
+          type: "node:update",
+          payload: {
+            nodeId: r.node_id, longName: r.long_name, shortName: r.short_name,
+            macAddress: r.mac_address, hwModel: r.hw_model, publicKey: r.public_key,
+            lastHeard: rxTime, snr: r.snr, hopsAway: r.hops_away,
+            latitude: r.latitude, longitude: r.longitude, altitude: r.altitude,
+          },
+        };
+        this.emit("event", nodeEvent);
       }
     }
 
@@ -495,6 +510,7 @@ export class DeviceManager extends EventEmitter {
     const n = nodeInfo as any;
     const nodeId: number = n.num ?? 0;
     if (nodeId === 0) return;
+    console.log(`[devices] nodeInfo !${nodeId.toString(16).padStart(8,"0")} "${n.user?.longName ?? n.user?.shortName ?? "?"}"`);
 
     const macBytes: Uint8Array | undefined = n.user?.macaddr;
     const macAddress = macBytes && macBytes.length > 0
