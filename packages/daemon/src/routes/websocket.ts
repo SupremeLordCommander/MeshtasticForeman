@@ -6,6 +6,8 @@ import { Types } from "@meshtastic/core";
 import type { DeviceManager } from "../device/device-manager.js";
 import type { MqttGateway } from "../mqtt/gateway.js";
 import type { PGlite } from "@electric-sql/pglite";
+import { activityLog } from "../activity/log.js";
+import type { ActivityEntry } from "@foreman/shared";
 
 /**
  * Single WebSocket endpoint at /ws
@@ -39,6 +41,12 @@ export async function registerWsRoute(
   // Forward mqtt_node:update events from the gateway to all WS clients
   mqttGateway?.on("mqtt_node:update", (node: MqttNode) => {
     const event: ServerEvent = { type: "mqtt_node:update", payload: node };
+    broadcast(event);
+  });
+
+  // Stream new activity entries to all clients as they arrive
+  activityLog.on("entry", (entry: ActivityEntry) => {
+    const event: ServerEvent = { type: "activity:entry", payload: entry };
     broadcast(event);
   });
 
@@ -78,6 +86,12 @@ export async function registerWsRoute(
           const mqttListEvent: ServerEvent = { type: "mqtt_node:list", payload: mqttNodes };
           socket.send(JSON.stringify(mqttListEvent));
         }
+      }
+
+      // Send recent activity log snapshot
+      const snapshot = activityLog.snapshot();
+      if (snapshot.length > 0) {
+        socket.send(JSON.stringify({ type: "activity:snapshot", payload: snapshot } satisfies ServerEvent));
       }
     });
 
