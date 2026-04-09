@@ -1,13 +1,13 @@
 import type { FastifyInstance } from "fastify";
 import type { WebSocket, RawData } from "ws";
-import type { ServerEvent, ClientCommand, MqttNode } from "@foreman/shared";
+import type { ServerEvent, ClientCommand, MqttNode, ActivityEntry, LogEntry } from "@foreman/shared";
 import { clientCommandSchema } from "@foreman/shared";
 import { Types } from "@meshtastic/core";
 import type { DeviceManager } from "../device/device-manager.js";
 import type { MqttGateway } from "../mqtt/gateway.js";
 import type { PGlite } from "@electric-sql/pglite";
 import { activityLog } from "../activity/log.js";
-import type { ActivityEntry } from "@foreman/shared";
+import { consoleLog } from "../activity/console-log.js";
 
 /**
  * Single WebSocket endpoint at /ws
@@ -47,6 +47,12 @@ export async function registerWsRoute(
   // Stream new activity entries to all clients as they arrive
   activityLog.on("entry", (entry: ActivityEntry) => {
     const event: ServerEvent = { type: "activity:entry", payload: entry };
+    broadcast(event);
+  });
+
+  // Stream console log lines to all clients
+  consoleLog.on("entry", (entry: LogEntry) => {
+    const event: ServerEvent = { type: "log:entry", payload: entry };
     broadcast(event);
   });
 
@@ -93,6 +99,18 @@ export async function registerWsRoute(
       if (snapshot.length > 0) {
         socket.send(JSON.stringify({ type: "activity:snapshot", payload: snapshot } satisfies ServerEvent));
       }
+
+      // Send console log snapshot
+      const logSnapshot = consoleLog.snapshot();
+      if (logSnapshot.length > 0) {
+        socket.send(JSON.stringify({ type: "log:snapshot", payload: logSnapshot } satisfies ServerEvent));
+      }
+
+      // Send current MQTT status
+      socket.send(JSON.stringify({
+        type: "mqtt:status",
+        payload: { enabled: mqttGateway?.isRunning ?? false },
+      } satisfies ServerEvent));
     });
 
     socket.on("message", (raw: RawData) => {
@@ -109,7 +127,7 @@ export async function registerWsRoute(
         return;
       }
 
-      handleClientCommand(parsed, socket, deviceManager, packetSubscriptions, mqttGateway, db).catch((err) => {
+      handleClientCommand(parsed, socket, deviceManager, packetSubscriptions, mqttGateway, db, broadcast).catch((err) => {
         console.error("[ws] command error:", err);
         socket.send(
           JSON.stringify({
@@ -135,6 +153,7 @@ async function handleClientCommand(
   packetSubscriptions: Set<WebSocket>,
   mqttGateway?: MqttGateway | null,
   db?: PGlite,
+  broadcast?: (event: ServerEvent) => void,
 ) {
   switch (command.type) {
     case "message:send": {
@@ -276,6 +295,27 @@ async function handleClientCommand(
         type: "node:removed",
         payload: { nodeId },
       } satisfies ServerEvent));
+      break;
+    }
+
+    case "mqtt:toggle": {
+      const { enabled } = command.payload;
+      if (!mqttGateway) {
+        socket.send(JSON.stringify({
+          type: "error",
+          payload: { code: "NO_MQTT", message: "MQTT gateway not configured" },
+        } satisfies ServerEvent));
+        return;
+      }
+      if (enabled && !mqttGateway.isRunning) {
+        mqttGateway.start();
+        console.log("[ws] mqtt:toggle → started");
+      } else if (!enabled && mqttGateway.isRunning) {
+        mqttGateway.stop();
+        console.log("[ws] mqtt:toggle → stopped");
+      }
+      // Broadcast new status to all clients
+      broadcast?.({ type: "mqtt:status", payload: { enabled: mqttGateway.isRunning } });
       break;
     }
 

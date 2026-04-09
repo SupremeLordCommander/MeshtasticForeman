@@ -112,6 +112,14 @@ export interface ActivityEntry {
   viaMqtt: boolean;        // mesh: was packet a downlink echo
 }
 
+export interface LogEntry {
+  id: number;
+  ts: string;
+  level: "log" | "warn" | "error";
+  tag: string;   // "devices", "mqtt", "ws", etc. — empty string for untagged
+  text: string;
+}
+
 export interface NodeOverride {
   nodeId: number;
   aliasName: string | null;
