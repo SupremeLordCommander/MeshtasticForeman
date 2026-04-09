@@ -64,16 +64,19 @@ export async function registerWsRoute(
     deviceManager.listDevices().then(async (devices) => {
       const deviceListEvent: ServerEvent = {
         type: "device:list",
-        payload: devices.map((d) => ({
-          id: d.id,
-          name: d.name,
-          port: d.port,
-          status: "connected" as const,
-          connectedAt: null,
-          lastSeenAt: d.last_seen ?? null,
-          hardwareModel: d.hw_model ?? null,
-          firmwareVersion: d.firmware ?? null,
-        })),
+        payload: devices.map((d) => {
+          const live = deviceManager.getDevice(d.id);
+          return {
+            id: d.id,
+            name: d.name,
+            port: d.port,
+            status: live ? "connected" as const : "disconnected" as const,
+            connectedAt: live?.connectedAt ?? null,
+            lastSeenAt: live?.connectedAt ?? d.last_seen ?? null,
+            hardwareModel: d.hw_model ?? null,
+            firmwareVersion: d.firmware ?? null,
+          };
+        }),
       };
       socket.send(JSON.stringify(deviceListEvent));
 

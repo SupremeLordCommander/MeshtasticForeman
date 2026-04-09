@@ -111,6 +111,7 @@ export class DeviceManager extends EventEmitter {
     const connectedAt = new Date().toISOString();
     const device: ConnectedDevice = { id, port, name, connectedAt, meshDevice, transport };
     this.devices.set(id, device);
+    await this.db.query("UPDATE devices SET last_seen = $1 WHERE id = $2", [connectedAt, id]);
 
     // Subscribe to all relevant events
     meshDevice.events.onMessagePacket.subscribe((pkt: Types.PacketMetadata<string>) => {
