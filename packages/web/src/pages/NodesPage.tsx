@@ -282,23 +282,6 @@ export function NodesPage({ devices, nodes, mqttNodes }: Props) {
 
   return (
     <div style={styles.page}>
-      {/* Device status bar */}
-      <div style={styles.deviceBar}>
-        {devices.length === 0 ? (
-          <span style={styles.muted}>No devices — POST /api/devices/connect</span>
-        ) : (
-          devices.map((d) => (
-            <span key={d.id} style={styles.deviceChip}>
-              <span style={{ ...styles.dot, background: d.status === "connected" ? "#22c55e" : "#ef4444" }} />
-              <strong>{d.name}</strong>
-              {d.port !== d.name && <span style={styles.muted}>{d.port}</span>}
-              {d.firmwareVersion && <span style={styles.muted}>· fw {d.firmwareVersion}</span>}
-              {d.lastSeenAt && <span style={styles.muted}>· {formatLastHeard(d.lastSeenAt)}</span>}
-            </span>
-          ))
-        )}
-      </div>
-
       <section style={styles.section}>
         {/* Title + search bar row */}
         <div style={styles.titleRow}>
@@ -579,18 +562,6 @@ function NodeRows({
 
 const styles: Record<string, React.CSSProperties> = {
   page: { padding: "1.5rem 2rem" },
-  deviceBar: {
-    display: "flex",
-    flexWrap: "wrap",
-    gap: "0.75rem",
-    marginBottom: "1.5rem",
-    padding: "0.5rem 0.75rem",
-    background: "#1e293b",
-    borderRadius: "0.5rem",
-    alignItems: "center",
-  },
-  deviceChip: { display: "flex", alignItems: "center", gap: "0.5rem", fontSize: "0.875rem" },
-  dot: { width: "0.5rem", height: "0.5rem", borderRadius: "50%", flexShrink: 0 },
   section: { marginBottom: "2rem" },
   titleRow: {
     display: "flex",

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { foremanClient } from "./ws/client.js";
 import type { DeviceInfo, NodeInfo, MqttNode, NodeOverride, ActivityEntry, LogEntry } from "@foreman/shared";
 import { NodesPage } from "./pages/NodesPage.js";
@@ -43,6 +43,14 @@ function applyNodeOverrides<T extends { nodeId: number; latitude: number | null;
   });
 }
 
+function formatRelative(iso: string): string {
+  const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (diff < 60) return `${diff}s ago`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return `${Math.floor(diff / 86400)}d ago`;
+}
+
 export function App() {
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
   const [nodes, setNodes] = useState<NodeInfo[]>([]);
@@ -53,6 +61,8 @@ export function App() {
   const [mqttEnabled, setMqttEnabled] = useState(false);
   const [connected, setConnected] = useState(false);
   const [tab, setTab] = useState<Tab>("nodes");
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   // ── Map filters ────────────────────────────────────────────────────────────
   const [showMesh, setShowMesh] = useState(true);
@@ -67,6 +77,18 @@ export function App() {
   const [logsLevel, setLogsLevel] = useState<LogsLevel>("all");
   const [logsTag, setLogsTag] = useState<TagFilter>("all");
   const [logsPaused, setLogsPaused] = useState(false);
+
+  // Close menu on outside click
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [menuOpen]);
 
   const loadOverrides = useCallback(async () => {
     try {
@@ -164,6 +186,11 @@ export function App() {
     foremanClient.send({ type: "mqtt:toggle", payload: { enabled: !mqttEnabled } });
   }, [mqttEnabled]);
 
+  const navigate = useCallback((t: Tab) => {
+    setTab(t);
+    setMenuOpen(false);
+  }, []);
+
   // Merge override fallbacks before passing to pages
   const effectiveNodes     = applyNodeOverrides(nodes,     overrides);
   const effectiveMqttNodes = applyNodeOverrides(mqttNodes, overrides);
@@ -187,131 +214,172 @@ export function App() {
     return [...seen.values()].sort((a, b) => a.nodeId - b.nodeId);
   })();
 
+  const hasTabFilters = tab === "map" || tab === "activity" || tab === "logs";
+
   return (
     <div style={styles.page}>
       <header style={styles.header}>
         <img src={logo} alt="Meshtastic Foreman" style={styles.logo} />
         <h1 style={styles.title}>Meshtastic Foreman</h1>
+
         <nav style={styles.nav}>
           <button style={tabStyle(tab === "nodes")} onClick={() => setTab("nodes")}>Nodes</button>
           <button style={tabStyle(tab === "map")} onClick={() => setTab("map")}>Map</button>
-          <button style={tabStyle(tab === "activity")} onClick={() => setTab("activity")}>
-            Activity {activity.length > 0 && <span style={styles.tabCount}>{activity.length}</span>}
-          </button>
-          <button style={tabStyle(tab === "logs")} onClick={() => setTab("logs")}>
-            Logs {logs.length > 0 && <span style={styles.tabCount}>{logs.length}</span>}
-          </button>
-          <button style={tabStyle(tab === "overrides")} onClick={() => setTab("overrides")}>
-            Overrides {overrides.size > 0 && <span style={styles.tabCount}>{overrides.size}</span>}
-          </button>
         </nav>
 
-        {/* ── Tab-specific filters ───────────────────────────────────────── */}
-        <div style={styles.filterGroup}>
-
-          {tab === "map" && (
-            <>
-              <span style={styles.filterLabel}>Show:</span>
-              <button
-                style={hdrFilterBtn(showMesh)}
-                onClick={() => setShowMesh((v) => !v)}
-              >
-                <span style={{ ...styles.dotBase, border: "2px solid #94a3b8", background: "#0f172a" }} />
-                Mesh
-                {mappableMeshCount > 0 && <span style={styles.hdrCount}>{mappableMeshCount}</span>}
-              </button>
-              <button
-                style={hdrFilterBtn(showMqtt)}
-                onClick={() => setShowMqtt((v) => !v)}
-              >
-                <span style={{ ...styles.dotBase, border: "2px dashed #94a3b8", background: "#0f172a" }} />
-                MQTT
-                {mappableMqttCount > 0 && <span style={styles.hdrCount}>{mappableMqttCount}</span>}
-              </button>
-            </>
-          )}
-
-          {tab === "activity" && (
-            <>
-              <span style={styles.filterLabel}>Window:</span>
-              {(["5m", "15m", "1h", "all"] as ActivityWindow[]).map((w) => (
-                <button key={w} style={hdrFilterBtn(activityWindow === w)} onClick={() => setActivityWindow(w)}>{w}</button>
-              ))}
-              <span style={{ ...styles.filterLabel, marginLeft: "0.4rem" }}>Source:</span>
-              {(["all", "mesh", "mqtt"] as ActivitySource[]).map((s) => (
-                <button
-                  key={s}
-                  style={{
-                    ...hdrFilterBtn(activitySource === s),
-                    color: activitySource === s ? "#fff" : s === "mesh" ? "#60a5fa" : s === "mqtt" ? "#34d399" : undefined,
-                  }}
-                  onClick={() => setActivitySource(s)}
-                >{s}</button>
-              ))}
-              <button
-                style={{ ...hdrFilterBtn(activityPaused), marginLeft: "0.25rem" }}
-                onClick={() => setActivityPaused((p) => !p)}
-              >
-                {activityPaused ? "▶ Resume" : "⏸ Pause"}
-              </button>
-            </>
-          )}
-
-          {tab === "logs" && (
-            <>
-              <span style={styles.filterLabel}>Level:</span>
-              {(["all", "log", "warn", "error"] as LogsLevel[]).map((l) => (
-                <button
-                  key={l}
-                  style={{
-                    ...hdrFilterBtn(logsLevel === l),
-                    color: logsLevel === l ? "#fff" : l === "warn" ? "#fbbf24" : l === "error" ? "#f87171" : undefined,
-                  }}
-                  onClick={() => setLogsLevel(l)}
-                >{l}</button>
-              ))}
-              <span style={{ ...styles.filterLabel, marginLeft: "0.4rem" }}>Tag:</span>
-              <button style={hdrFilterBtn(logsTag === "all")} onClick={() => setLogsTag("all")}>all</button>
-              {KNOWN_TAGS.map((t) => (
-                <button
-                  key={t}
-                  style={{ ...hdrFilterBtn(logsTag === t), color: logsTag === t ? "#fff" : TAG_COLORS[t] }}
-                  onClick={() => setLogsTag(t)}
-                >
-                  {t}
-                  {logTagCounts[t] ? <span style={styles.hdrCount}>{logTagCounts[t]}</span> : null}
-                </button>
-              ))}
-              <button
-                style={{ ...hdrFilterBtn(logsPaused), marginLeft: "0.25rem" }}
-                onClick={() => setLogsPaused((p) => !p)}
-              >
-                {logsPaused ? "▶ Resume" : "⏸ Pause"}
-              </button>
-            </>
-          )}
-
-          {/* Divider */}
-          <div style={styles.divider} />
-
-          <button
-            onClick={toggleMqtt}
-            style={{
-              background: mqttEnabled ? "#166534" : "#1e293b",
-              border: `1px solid ${mqttEnabled ? "#16a34a" : "#ef4444"}`,
-              color: mqttEnabled ? "#4ade80" : "#f87171",
-              padding: "0.2rem 0.7rem",
-              borderRadius: "0.25rem",
-              cursor: "pointer",
-              fontSize: "0.75rem",
-              fontFamily: "monospace",
-            }}
-          >
-            MQTT {mqttEnabled ? "ON" : "OFF"}
+        {/* ── System menu ───────────────────────────────────────────────────── */}
+        <div ref={menuRef} style={styles.menuContainer}>
+          <button onClick={() => setMenuOpen((v) => !v)} style={menuBtnStyle(menuOpen, connected)}>
+            Settings
+            <span style={{ color: "#475569", marginLeft: "0.3rem", fontSize: "0.65rem" }}>▾</span>
           </button>
-          <span style={{ ...styles.badge, background: connected ? "#22c55e" : "#ef4444" }}>
-            {connected ? "connected" : "disconnected"}
-          </span>
+
+          {menuOpen && (
+            <div style={styles.menuPanel}>
+
+              {/* COM port details */}
+              <div style={styles.menuSection}>
+                <span style={styles.menuSectionLabel}>Devices</span>
+                {devices.length === 0 ? (
+                  <span style={{ color: "#475569", fontSize: "0.72rem" }}>No devices — POST /api/devices/connect</span>
+                ) : (
+                  devices.map((d) => (
+                    <div key={d.id} style={styles.menuDevice}>
+                      <span style={{ color: d.status === "connected" ? "#22c55e" : "#ef4444" }}>●</span>
+                      <span style={{ color: "#e2e8f0", fontWeight: "bold" }}>{d.port}</span>
+                      {d.firmwareVersion && <span style={{ color: "#475569" }}>fw {d.firmwareVersion}</span>}
+                      {d.lastSeenAt && <span style={{ color: "#475569" }}>{formatRelative(d.lastSeenAt)}</span>}
+                    </div>
+                  ))
+                )}
+              </div>
+
+              <div style={styles.menuDivider} />
+
+              {/* Navigation */}
+              <div style={styles.menuSection}>
+                <span style={styles.menuSectionLabel}>Navigate</span>
+                <button style={menuNavBtn(tab === "activity")} onClick={() => navigate("activity")}>
+                  Activity
+                  {activity.length > 0 && <span style={styles.menuCount}>{activity.length}</span>}
+                </button>
+                <button style={menuNavBtn(tab === "logs")} onClick={() => navigate("logs")}>
+                  Logs
+                  {logs.length > 0 && <span style={styles.menuCount}>{logs.length}</span>}
+                </button>
+                <button style={menuNavBtn(tab === "overrides")} onClick={() => navigate("overrides")}>
+                  Overrides
+                  {overrides.size > 0 && <span style={styles.menuCount}>{overrides.size}</span>}
+                </button>
+              </div>
+
+              {/* Tab-specific filters */}
+              {hasTabFilters && <div style={styles.menuDivider} />}
+
+              {tab === "map" && (
+                <div style={styles.menuSection}>
+                  <span style={styles.menuSectionLabel}>Map filters</span>
+                  <button style={hdrFilterBtn(showMesh)} onClick={() => setShowMesh((v) => !v)}>
+                    <span style={{ ...styles.dotBase, border: "2px solid #94a3b8", background: "#0f172a" }} />
+                    Mesh
+                    {mappableMeshCount > 0 && <span style={styles.hdrCount}>{mappableMeshCount}</span>}
+                  </button>
+                  <button style={hdrFilterBtn(showMqtt)} onClick={() => setShowMqtt((v) => !v)}>
+                    <span style={{ ...styles.dotBase, border: "2px dashed #94a3b8", background: "#0f172a" }} />
+                    MQTT
+                    {mappableMqttCount > 0 && <span style={styles.hdrCount}>{mappableMqttCount}</span>}
+                  </button>
+                </div>
+              )}
+
+              {tab === "activity" && (
+                <div style={styles.menuSection}>
+                  <span style={styles.menuSectionLabel}>Activity filters</span>
+                  <span style={styles.filterLabel}>Window:</span>
+                  {(["5m", "15m", "1h", "all"] as ActivityWindow[]).map((w) => (
+                    <button key={w} style={hdrFilterBtn(activityWindow === w)} onClick={() => setActivityWindow(w)}>{w}</button>
+                  ))}
+                  <span style={{ ...styles.filterLabel, marginLeft: "0.4rem" }}>Source:</span>
+                  {(["all", "mesh", "mqtt"] as ActivitySource[]).map((s) => (
+                    <button
+                      key={s}
+                      style={{
+                        ...hdrFilterBtn(activitySource === s),
+                        color: activitySource === s ? "#fff" : s === "mesh" ? "#60a5fa" : s === "mqtt" ? "#34d399" : undefined,
+                      }}
+                      onClick={() => setActivitySource(s)}
+                    >{s}</button>
+                  ))}
+                  <button
+                    style={{ ...hdrFilterBtn(activityPaused), marginLeft: "0.25rem" }}
+                    onClick={() => setActivityPaused((p) => !p)}
+                  >
+                    {activityPaused ? "▶ Resume" : "⏸ Pause"}
+                  </button>
+                </div>
+              )}
+
+              {tab === "logs" && (
+                <div style={styles.menuSection}>
+                  <span style={styles.menuSectionLabel}>Log filters</span>
+                  <span style={styles.filterLabel}>Level:</span>
+                  {(["all", "log", "warn", "error"] as LogsLevel[]).map((l) => (
+                    <button
+                      key={l}
+                      style={{
+                        ...hdrFilterBtn(logsLevel === l),
+                        color: logsLevel === l ? "#fff" : l === "warn" ? "#fbbf24" : l === "error" ? "#f87171" : undefined,
+                      }}
+                      onClick={() => setLogsLevel(l)}
+                    >{l}</button>
+                  ))}
+                  <span style={{ ...styles.filterLabel, marginLeft: "0.4rem" }}>Tag:</span>
+                  <button style={hdrFilterBtn(logsTag === "all")} onClick={() => setLogsTag("all")}>all</button>
+                  {KNOWN_TAGS.map((t) => (
+                    <button
+                      key={t}
+                      style={{ ...hdrFilterBtn(logsTag === t), color: logsTag === t ? "#fff" : TAG_COLORS[t] }}
+                      onClick={() => setLogsTag(t)}
+                    >
+                      {t}
+                      {logTagCounts[t] ? <span style={styles.hdrCount}>{logTagCounts[t]}</span> : null}
+                    </button>
+                  ))}
+                  <button
+                    style={{ ...hdrFilterBtn(logsPaused), marginLeft: "0.25rem" }}
+                    onClick={() => setLogsPaused((p) => !p)}
+                  >
+                    {logsPaused ? "▶ Resume" : "⏸ Pause"}
+                  </button>
+                </div>
+              )}
+
+              <div style={styles.menuDivider} />
+
+              {/* MQTT + WS status */}
+              <div style={{ ...styles.menuSection, justifyContent: "space-between" }}>
+                <button
+                  onClick={toggleMqtt}
+                  style={{
+                    background: mqttEnabled ? "#166534" : "#1e293b",
+                    border: `1px solid ${mqttEnabled ? "#16a34a" : "#ef4444"}`,
+                    color: mqttEnabled ? "#4ade80" : "#f87171",
+                    padding: "0.2rem 0.7rem",
+                    borderRadius: "0.25rem",
+                    cursor: "pointer",
+                    fontSize: "0.75rem",
+                    fontFamily: "monospace",
+                  }}
+                >
+                  MQTT {mqttEnabled ? "ON" : "OFF"}
+                </button>
+                <span style={{ ...styles.badge, background: connected ? "#22c55e" : "#ef4444" }}>
+                  {connected ? "connected" : "disconnected"}
+                </span>
+              </div>
+
+            </div>
+          )}
         </div>
       </header>
 
@@ -394,6 +462,39 @@ function tabStyle(active: boolean): React.CSSProperties {
   };
 }
 
+function menuBtnStyle(open: boolean, connected: boolean): React.CSSProperties {
+  return {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "0.3rem",
+    background: open ? "#1e293b" : "#0f172a",
+    border: `1px solid ${connected ? (open ? "#3b82f6" : "#1e293b") : "#ef4444"}`,
+    color: "#e2e8f0",
+    padding: "0.25rem 0.65rem",
+    borderRadius: "0.375rem",
+    cursor: "pointer",
+    fontFamily: "monospace",
+    fontSize: "0.8rem",
+    whiteSpace: "nowrap",
+  };
+}
+
+function menuNavBtn(active: boolean): React.CSSProperties {
+  return {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "0.3rem",
+    background: active ? "#1e3a5f" : "#0f172a",
+    border: `1px solid ${active ? "#3b82f6" : "#1e293b"}`,
+    color: active ? "#e2e8f0" : "#94a3b8",
+    padding: "0.2rem 0.6rem",
+    borderRadius: "0.25rem",
+    cursor: "pointer",
+    fontFamily: "monospace",
+    fontSize: "0.8rem",
+  };
+}
+
 function hdrFilterBtn(active: boolean): React.CSSProperties {
   return {
     display: "inline-flex",
@@ -426,7 +527,6 @@ const styles: Record<string, React.CSSProperties> = {
     padding: "0.65rem 1.25rem",
     borderBottom: "1px solid #1e293b",
     flexShrink: 0,
-    flexWrap: "wrap",
   },
   logo: {
     height: "2rem",
@@ -443,19 +543,55 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     gap: "0.25rem",
   },
-  tabCount: {
+  menuContainer: {
+    position: "relative",
+    marginLeft: "auto",
+    flexShrink: 0,
+  },
+  menuPanel: {
+    position: "absolute",
+    top: "calc(100% + 0.4rem)",
+    right: 0,
+    minWidth: "280px",
+    background: "#0f172a",
+    border: "1px solid #1e293b",
+    borderRadius: "0.5rem",
+    boxShadow: "0 8px 24px rgba(0,0,0,0.5)",
+    zIndex: 100,
+    overflow: "hidden",
+  },
+  menuSection: {
+    display: "flex",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: "0.3rem",
+    padding: "0.6rem 0.75rem",
+  },
+  menuSectionLabel: {
+    width: "100%",
+    color: "#334155",
+    fontSize: "0.65rem",
+    textTransform: "uppercase",
+    letterSpacing: "0.05em",
+    marginBottom: "0.15rem",
+  },
+  menuDevice: {
+    width: "100%",
+    display: "flex",
+    alignItems: "center",
+    gap: "0.4rem",
+    fontSize: "0.8rem",
+    padding: "0.1rem 0",
+  },
+  menuDivider: {
+    height: "1px",
+    background: "#1e293b",
+  },
+  menuCount: {
     background: "#334155",
     borderRadius: "9999px",
     padding: "0 0.35rem",
-    fontSize: "0.7rem",
-    marginLeft: "0.3rem",
-  },
-  filterGroup: {
-    marginLeft: "auto",
-    display: "flex",
-    alignItems: "center",
-    gap: "0.3rem",
-    flexWrap: "wrap",
+    fontSize: "0.65rem",
   },
   filterLabel: {
     color: "#475569",
@@ -476,18 +612,18 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: "0.6rem",
     marginLeft: "0.1rem",
   },
-  divider: {
-    width: "1px",
-    height: "1.2rem",
-    background: "#1e293b",
-    margin: "0 0.2rem",
-    flexShrink: 0,
-  },
   badge: {
     padding: "0.15rem 0.5rem",
     borderRadius: "9999px",
     fontSize: "0.75rem",
     color: "#fff",
     fontWeight: "bold",
+  },
+  tabCount: {
+    background: "#334155",
+    borderRadius: "9999px",
+    padding: "0 0.35rem",
+    fontSize: "0.7rem",
+    marginLeft: "0.3rem",
   },
 };
