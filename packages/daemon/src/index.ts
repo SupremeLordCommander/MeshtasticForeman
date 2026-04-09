@@ -15,8 +15,17 @@ import { registerWsRoute } from "./routes/websocket.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const PORT = Number(process.env.PORT ?? 3750);
-const HOST = process.env.HOST ?? "0.0.0.0";
+const PORT = Number(process.env.API_PORT ?? 3750);
+const HOST = process.env.API_HOST ?? "0.0.0.0";
+
+// The serial transport calls AbortController.abort() on disconnect, which rejects
+// any in-flight reads using that signal. Those rejections are unhandled inside the
+// transport's own machinery and would otherwise crash the process.
+process.on("unhandledRejection", (reason) => {
+  if (reason instanceof Error && reason.name === "AbortError") return;
+  console.error("[foreman] unhandled rejection:", reason);
+  process.exit(1);
+});
 
 async function main() {
   // Capture all console.log/warn/error into the in-memory ring buffer

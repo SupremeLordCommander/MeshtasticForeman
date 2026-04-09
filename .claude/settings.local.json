@@ -1,7 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(node --input-type=module --eval ':*)"
+      "Bash(node --input-type=module --eval ':*)",
+      "Bash(curl -s http://localhost:3001/api/devices)",
+      "Bash(curl -s http://localhost:3000/api/devices)",
+      "Bash(curl -s \"http://localhost:3172/api/devices\")"
     ]
   }
 }

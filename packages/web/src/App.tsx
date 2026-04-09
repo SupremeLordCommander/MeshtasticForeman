@@ -1,14 +1,15 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { foremanClient } from "./ws/client.js";
-import type { DeviceInfo, NodeInfo, MqttNode, NodeOverride, ActivityEntry, LogEntry } from "@foreman/shared";
+import type { DeviceInfo, NodeInfo, MqttNode, NodeOverride, ActivityEntry, LogEntry, DeviceConfig } from "@foreman/shared";
 import { NodesPage } from "./pages/NodesPage.js";
 import { MapPage } from "./pages/MapPage.js";
 import { NodeOverridesPage } from "./pages/NodeOverridesPage.js";
 import { ActivityPage } from "./pages/ActivityPage.js";
 import { LogsPage } from "./pages/LogsPage.js";
+import { DeviceConfigPage } from "./pages/DeviceConfigPage.js";
 import logo from "./assets/logo.png";
 
-type Tab = "nodes" | "map" | "activity" | "logs" | "overrides";
+type Tab = "nodes" | "map" | "activity" | "logs" | "overrides" | "config";
 type ActivityWindow = "5m" | "15m" | "1h" | "all";
 type ActivitySource = "all" | "mesh" | "mqtt";
 type LogsLevel = "all" | "log" | "warn" | "error";
@@ -61,6 +62,7 @@ export function App() {
   const [mqttEnabled, setMqttEnabled] = useState(false);
   const [connected, setConnected] = useState(false);
   const [tab, setTab] = useState<Tab>("nodes");
+  const [deviceConfigs, setDeviceConfigs] = useState<Map<string, DeviceConfig>>(new Map());
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -173,6 +175,9 @@ export function App() {
       if (event.type === "mqtt:status") {
         setMqttEnabled(event.payload.enabled);
       }
+      if (event.type === "device:config") {
+        setDeviceConfigs((prev) => new Map(prev).set(event.payload.deviceId, event.payload));
+      }
     });
 
     return () => {
@@ -270,6 +275,9 @@ export function App() {
                 <button style={menuNavBtn(tab === "overrides")} onClick={() => navigate("overrides")}>
                   Overrides
                   {overrides.size > 0 && <span style={styles.menuCount}>{overrides.size}</span>}
+                </button>
+                <button style={menuNavBtn(tab === "config")} onClick={() => navigate("config")}>
+                  Device Config
                 </button>
               </div>
 
@@ -427,6 +435,11 @@ export function App() {
             noLocationNodes={noLocationNodes}
             onChanged={loadOverrides}
           />
+        </div>
+      )}
+      {tab === "config" && (
+        <div style={{ flex: 1, overflowY: "auto" }}>
+          <DeviceConfigPage devices={devices} configs={deviceConfigs} />
         </div>
       )}
     </div>

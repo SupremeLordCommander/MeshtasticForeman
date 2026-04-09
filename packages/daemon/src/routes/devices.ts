@@ -43,6 +43,13 @@ export async function registerDeviceRoutes(
     return nodes;
   });
 
+  app.get("/api/devices/:id/config", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const config = await deviceManager.getDeviceConfig(id);
+    if (!config) return reply.status(404).send({ error: "Device not found" });
+    return config;
+  });
+
   app.get("/api/mqtt-nodes", async () => {
     if (!mqttGateway) return [];
     return mqttGateway.listMqttNodes();

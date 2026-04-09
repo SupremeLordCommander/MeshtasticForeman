@@ -2,11 +2,26 @@ import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import { Buffer } from "node:buffer";
 import type { PGlite } from "@electric-sql/pglite";
-import type { ServerEvent, Message, NodeInfo } from "@foreman/shared";
+import type { ServerEvent, Message, NodeInfo, DeviceConfig, Channel } from "@foreman/shared";
 import { MeshDevice, Types, Protobuf } from "@meshtastic/core";
 import { TransportNodeSerial } from "@meshtastic/transport-node-serial";
 import type { MqttGateway } from "../mqtt/gateway.js";
 import { activityLog } from "../activity/log.js";
+
+/**
+ * Converts a protobuf object to a plain JSON-serialisable value.
+ * Handles BigInt → number and Uint8Array → base64 string, both of which
+ * appear in Meshtastic protobuf messages.
+ */
+function toPlainObject(obj: unknown): unknown {
+  return JSON.parse(
+    JSON.stringify(obj, (_, v) => {
+      if (typeof v === "bigint") return Number(v);
+      if (v instanceof Uint8Array) return Buffer.from(v).toString("base64");
+      return v;
+    })
+  );
+}
 
 export interface ConnectedDevice {
   id: string;
@@ -181,6 +196,27 @@ export class DeviceManager extends EventEmitter {
       );
     });
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    meshDevice.events.onConfigPacket.subscribe((pkt: any) => {
+      this._handleConfigPacket(id, name, pkt).catch((err) =>
+        console.error(`[devices] config packet error on ${name}:`, err)
+      );
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    meshDevice.events.onModuleConfigPacket.subscribe((pkt: any) => {
+      this._handleModuleConfigPacket(id, name, pkt).catch((err) =>
+        console.error(`[devices] module config packet error on ${name}:`, err)
+      );
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    meshDevice.events.onChannelPacket.subscribe((pkt: any) => {
+      this._handleChannelPacket(id, name, pkt).catch((err) =>
+        console.error(`[devices] channel packet error on ${name}:`, err)
+      );
+    });
+
     // Attach to MQTT gateway BEFORE configure so it catches onMyNodeInfo/onChannelPacket
     this.mqttGateway?.attachDevice(id, meshDevice);
 
@@ -195,6 +231,10 @@ export class DeviceManager extends EventEmitter {
 
     this._emitStatus(id, name, port, "connected", connectedAt);
     console.log(`[devices] connected ${name} on ${port} (id=${id})`);
+
+    // Emit config snapshot now that all onConfigPacket/onModuleConfigPacket/onChannelPacket
+    // handlers have fired and their DB writes are queued ahead of this read.
+    await this._emitDeviceConfig(id);
 
     // Watchdog: if we receive zero mesh packets for 90 s after configure, re-run
     // configure().  This recovers from the rare case where the device's serial
@@ -694,6 +734,96 @@ export class DeviceManager extends EventEmitter {
         latitude: lat, longitude: lon, altitude: alt,
       },
     };
+    this.emit("event", event);
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async _handleConfigPacket(deviceId: string, name: string, pkt: any) {
+    // SDK dispatches the Config object directly; its sections live in payloadVariant
+    const variant = pkt?.payloadVariant;
+    if (!variant?.case || variant.value == null) return;
+    const section: string = variant.case;
+    const value = toPlainObject(variant.value);
+    await this.db.query(
+      `UPDATE devices
+       SET radio_config = jsonb_set(COALESCE(radio_config, '{}'), ARRAY[$1], $2::jsonb)
+       WHERE id = $3`,
+      [section, JSON.stringify(value), deviceId]
+    );
+    console.log(`[devices] radio config ${name} section=${section}`);
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async _handleModuleConfigPacket(deviceId: string, name: string, pkt: any) {
+    // SDK dispatches the ModuleConfig object directly; its sections live in payloadVariant
+    const variant = pkt?.payloadVariant;
+    if (!variant?.case || variant.value == null) return;
+    const section: string = variant.case;
+    const value = toPlainObject(variant.value);
+    await this.db.query(
+      `UPDATE devices
+       SET module_config = jsonb_set(COALESCE(module_config, '{}'), ARRAY[$1], $2::jsonb)
+       WHERE id = $3`,
+      [section, JSON.stringify(value), deviceId]
+    );
+    console.log(`[devices] module config ${name} section=${section}`);
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async _handleChannelPacket(deviceId: string, name: string, pkt: any) {
+    // SDK dispatches the Channel object directly (no .data wrapper)
+    const ch = pkt;
+    if (ch == null || ch.index == null) return;
+    const idx: number = Number(ch.index);
+    const chName: string | null = ch.settings?.name ?? null;
+    const role: number = Number(ch.role ?? 0);
+    const pskBytes: Uint8Array | null = ch.settings?.psk ?? null;
+    const psk: string | null = pskBytes?.length
+      ? Buffer.from(pskBytes).toString("base64")
+      : null;
+    await this.db.query(
+      `INSERT INTO channels(device_id, idx, name, role, psk)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT(device_id, idx) DO UPDATE
+         SET name = EXCLUDED.name, role = EXCLUDED.role, psk = EXCLUDED.psk`,
+      [deviceId, idx, chName, role, psk]
+    );
+    console.log(`[devices] channel ${name} idx=${idx} name=${chName ?? "(none)"} role=${role}`);
+  }
+
+  async getDeviceConfig(deviceId: string): Promise<DeviceConfig | null> {
+    const { rows } = await this.db.query<{
+      radio_config: Record<string, unknown> | null;
+      module_config: Record<string, unknown> | null;
+    }>("SELECT radio_config, module_config FROM devices WHERE id = $1", [deviceId]);
+    if (!rows[0]) return null;
+
+    const { rows: chRows } = await this.db.query<{
+      idx: number; name: string | null; role: number; psk: string | null;
+    }>(
+      "SELECT idx, name, role, psk FROM channels WHERE device_id = $1 ORDER BY idx",
+      [deviceId]
+    );
+
+    const channels: Channel[] = chRows.map((r) => ({
+      index: r.idx,
+      name: r.name,
+      role: r.role,
+      psk: r.psk,
+    }));
+
+    return {
+      deviceId,
+      radioConfig: rows[0].radio_config ?? {},
+      moduleConfig: rows[0].module_config ?? {},
+      channels,
+    };
+  }
+
+  private async _emitDeviceConfig(deviceId: string) {
+    const config = await this.getDeviceConfig(deviceId);
+    if (!config) return;
+    const event: ServerEvent = { type: "device:config", payload: config };
     this.emit("event", event);
   }
 

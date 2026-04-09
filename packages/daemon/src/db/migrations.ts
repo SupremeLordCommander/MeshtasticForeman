@@ -147,6 +147,15 @@ const migrations: string[] = [
   `
   ALTER TABLE mqtt_nodes ADD COLUMN IF NOT EXISTS distance_m DOUBLE PRECISION;
   `,
+
+  /* 007 – device radio/module config: store the full Meshtastic Config and
+            ModuleConfig protobufs as JSONB, keyed by section name.
+            e.g. radio_config = { "lora": {...}, "device": {...}, ... }
+                 module_config = { "mqtt": {...}, "telemetry": {...}, ... } */
+  `
+  ALTER TABLE devices ADD COLUMN IF NOT EXISTS radio_config  JSONB;
+  ALTER TABLE devices ADD COLUMN IF NOT EXISTS module_config JSONB;
+  `,
 ];
 
 export async function runMigrations(db: PGlite) {
