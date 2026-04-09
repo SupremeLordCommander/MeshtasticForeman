@@ -181,9 +181,6 @@ export function App() {
     for (const n of nodes) {
       if (n.latitude == null) seen.set(n.nodeId, { nodeId: n.nodeId, longName: n.longName, shortName: n.shortName });
     }
-    for (const n of mqttNodes) {
-      if (n.latitude == null && !seen.has(n.nodeId)) seen.set(n.nodeId, { nodeId: n.nodeId, longName: n.longName, shortName: n.shortName });
-    }
     for (const [id, ov] of overrides) {
       if (ov.latitude != null) seen.delete(id);
     }
