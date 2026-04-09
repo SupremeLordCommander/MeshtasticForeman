@@ -65,6 +65,7 @@ interface DeviceState {
   selfAnnounceTimer: NodeJS.Timeout | null;
   announceScheduled: boolean;              // prevents duplicate announce timers
   lastRelayAnnounceMs: number;             // timestamp of last relay-triggered self-announce
+  lastDistanceRecalcMs: number;            // timestamp of last bulk distance recalculation
 }
 
 // ---------------------------------------------------------------------------
@@ -169,6 +170,7 @@ export class MqttGateway extends EventEmitter {
       selfAnnounceTimer: null,
       announceScheduled: false,
       lastRelayAnnounceMs: 0,
+      lastDistanceRecalcMs: 0,
     };
     this.devices.set(deviceId, state);
 
@@ -240,8 +242,13 @@ export class MqttGateway extends EventEmitter {
         if (!hadPosition && state.announceScheduled) {
           this._publishSelf(deviceId).catch(console.error);
         }
-        // Recalculate distance_m for all known nodes now that our position changed
-        if (state.cachedPosition.latitudeI && state.cachedPosition.longitudeI) {
+        // Recalculate distance_m for all known nodes — rate-limited to once per 5 min
+        const RECALC_INTERVAL_MS = 5 * 60 * 1000;
+        if (
+          state.cachedPosition.latitudeI && state.cachedPosition.longitudeI &&
+          Date.now() - state.lastDistanceRecalcMs > RECALC_INTERVAL_MS
+        ) {
+          state.lastDistanceRecalcMs = Date.now();
           const lat = state.cachedPosition.latitudeI / 1e7;
           const lon = state.cachedPosition.longitudeI / 1e7;
           this._recalcAllDistances(lat, lon).catch(console.error);
@@ -798,52 +805,31 @@ export class MqttGateway extends EventEmitter {
 
   /**
    * Bulk-recalculate distance_m for every node with a known position.
-   * Called when our own GPS position changes so all rows stay current.
+   * Only updates the DB — does NOT emit individual node updates to avoid
+   * flooding the WS clients with hundreds of messages. Each node will carry
+   * its refreshed distance the next time it emits a natural update event.
    */
   private async _recalcAllDistances(ownLat: number, ownLon: number): Promise<void> {
-    // Single SQL pass — haversine entirely in the database
+    // GREATEST(0, ...) guards against sqrt of a tiny negative from floating-point rounding
+    // (haversine 'a' is mathematically in [0,1] but can exceed 1 by epsilon in practice)
     await this.db.query(
       `UPDATE mqtt_nodes SET distance_m = (
          6371000.0 * 2.0 * atan2(
-           sqrt(
+           sqrt(GREATEST(0.0,
              power(sin(radians((latitude  - $1) / 2.0)), 2) +
              cos(radians($1)) * cos(radians(latitude)) *
              power(sin(radians((longitude - $2) / 2.0)), 2)
-           ),
-           sqrt(1.0 - (
+           )),
+           sqrt(GREATEST(0.0, 1.0 - (
              power(sin(radians((latitude  - $1) / 2.0)), 2) +
              cos(radians($1)) * cos(radians(latitude)) *
              power(sin(radians((longitude - $2) / 2.0)), 2)
-           ))
+           )))
          )
        )
        WHERE latitude IS NOT NULL AND longitude IS NOT NULL`,
       [ownLat, ownLon]
     );
-
-    // Emit an update for each repositioned node so connected clients reflect new distances
-    const { rows } = await this.db.query<{
-      node_id: number; long_name: string | null; short_name: string | null;
-      hw_model: number | null; public_key: string | null;
-      latitude: number | null; longitude: number | null; altitude: number | null;
-      last_heard: string | null; last_gateway: string | null; region_path: string | null;
-      snr: number | null; hops_away: number | null; distance_m: number | null;
-    }>(
-      `SELECT node_id, long_name, short_name, hw_model, public_key, last_heard,
-              latitude, longitude, altitude, last_gateway, region_path, snr, hops_away, distance_m
-       FROM mqtt_nodes WHERE latitude IS NOT NULL AND longitude IS NOT NULL`
-    );
-
-    for (const r of rows) {
-      const node: MqttNode = {
-        nodeId: r.node_id, longName: r.long_name, shortName: r.short_name,
-        hwModel: r.hw_model, publicKey: r.public_key, lastHeard: r.last_heard,
-        latitude: r.latitude, longitude: r.longitude, altitude: r.altitude,
-        lastGateway: r.last_gateway, regionPath: r.region_path,
-        snr: r.snr, hopsAway: r.hops_away, distanceM: r.distance_m,
-      };
-      this.emit("mqtt_node:update", node);
-    }
-    console.log(`[mqtt] recalculated distances for ${rows.length} nodes`);
+    console.log(`[mqtt] recalculated distances for all positioned nodes`);
   }
 }
