@@ -37,19 +37,22 @@ function tagColor(tag: string): string {
 
 interface Props {
   entries: LogEntry[];
+  levelFilter: "all" | "log" | "warn" | "error";
+  tagFilter: TagFilter;
+  paused: boolean;
+  setPaused: (fn: (p: boolean) => boolean) => void;
 }
 
-export function LogsPage({ entries }: Props) {
-  const [levelFilter, setLevelFilter] = useState<"all" | "log" | "warn" | "error">("all");
-  const [tagFilter, setTagFilter]     = useState<TagFilter>("all");
-  const [paused, setPaused]           = useState(false);
-  const [frozen, setFrozen]           = useState<LogEntry[]>([]);
+export function LogsPage({ entries, levelFilter, tagFilter, paused, setPaused }: Props) {
+  const [frozen, setFrozen] = useState<LogEntry[]>([]);
   const feedRef  = useRef<HTMLDivElement>(null);
   const autoScroll = useRef(true);
 
+  // Snapshot entries when pausing; clear when resuming
   useEffect(() => {
-    if (!paused) setFrozen([]);
-  }, [paused]);
+    if (paused) setFrozen(applyFilters(entries));
+    else setFrozen([]);
+  }, [paused]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const applyFilters = (list: LogEntry[]) => list.filter((e) => {
     if (levelFilter !== "all" && e.level !== levelFilter) return false;
@@ -65,63 +68,8 @@ export function LogsPage({ entries }: Props) {
     }
   }, [displayEntries.length, paused]);
 
-  // Count by tag for the badge on each filter button
-  const tagCounts: Record<string, number> = {};
-  for (const e of entries) tagCounts[e.tag] = (tagCounts[e.tag] ?? 0) + 1;
-
   return (
     <div style={styles.page}>
-      {/* Controls */}
-      <div style={styles.controls}>
-        <span style={styles.label}>Level:</span>
-        {(["all", "log", "warn", "error"] as const).map((l) => (
-          <button
-            key={l}
-            style={{
-              ...styles.btn,
-              ...(levelFilter === l ? styles.btnActive : {}),
-              ...(l === "warn"  ? { color: levelFilter === l ? "#fff" : "#fbbf24" } : {}),
-              ...(l === "error" ? { color: levelFilter === l ? "#fff" : "#f87171" } : {}),
-            }}
-            onClick={() => setLevelFilter(l)}
-          >{l}</button>
-        ))}
-
-        <span style={{ ...styles.label, marginLeft: "0.75rem" }}>Tag:</span>
-        <button
-          style={{ ...styles.btn, ...(tagFilter === "all" ? styles.btnActive : {}) }}
-          onClick={() => setTagFilter("all")}
-        >all</button>
-        {KNOWN_TAGS.map((t) => (
-          <button
-            key={t}
-            style={{
-              ...styles.btn,
-              ...(tagFilter === t ? styles.btnActive : {}),
-              color: tagFilter === t ? "#fff" : tagColor(t),
-            }}
-            onClick={() => setTagFilter(t)}
-          >
-            {t}
-            {tagCounts[t] ? <span style={styles.tagCount}>{tagCounts[t]}</span> : null}
-          </button>
-        ))}
-
-        <span style={{ marginLeft: "0.75rem", color: "#475569", fontSize: "0.75rem" }}>
-          {displayEntries.length} lines
-        </span>
-
-        <button
-          style={{ ...styles.btn, marginLeft: "auto", ...(paused ? styles.btnActive : {}) }}
-          onClick={() => {
-            if (!paused) setFrozen(applyFilters(entries));
-            setPaused((p) => !p);
-          }}
-        >
-          {paused ? "▶ Resume" : "⏸ Pause"}
-        </button>
-      </div>
-
       {/* Feed */}
       <div
         ref={feedRef}
@@ -153,19 +101,7 @@ export function LogsPage({ entries }: Props) {
 // ---------------------------------------------------------------------------
 
 const styles: Record<string, React.CSSProperties> = {
-  page:     { padding: "0.75rem 1.5rem", display: "flex", flexDirection: "column", height: "100%", boxSizing: "border-box" },
-  controls: { display: "flex", alignItems: "center", gap: "0.3rem", marginBottom: "0.6rem", flexWrap: "wrap" },
-  label:    { color: "#64748b", fontSize: "0.75rem" },
-  btn: {
-    background: "#1e293b", border: "1px solid #334155", color: "#94a3b8",
-    padding: "0.2rem 0.55rem", borderRadius: "0.25rem", cursor: "pointer",
-    fontSize: "0.7rem", fontFamily: "monospace",
-  },
-  btnActive: { background: "#3b82f6", borderColor: "#3b82f6", color: "#fff" },
-  tagCount: {
-    background: "#334155", borderRadius: "9999px",
-    padding: "0 0.3rem", fontSize: "0.65rem", marginLeft: "0.25rem",
-  },
+  page: { padding: "0.75rem 1.5rem", display: "flex", flexDirection: "column", height: "100%", boxSizing: "border-box" },
   feed: {
     flex: 1,
     overflowY: "auto",

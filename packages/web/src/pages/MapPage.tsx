@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import Map, { Marker, Popup, NavigationControl } from "react-map-gl/maplibre";
 import "maplibre-gl/dist/maplibre-gl.css";
 import type { NodeInfo, MqttNode } from "@foreman/shared";
@@ -37,12 +37,22 @@ type SelectedNode =
 interface Props {
   nodes: NodeInfo[];
   mqttNodes: MqttNode[];
+  showMesh: boolean;
+  setShowMesh: (fn: (v: boolean) => boolean) => void;
+  showMqtt: boolean;
+  setShowMqtt: (fn: (v: boolean) => boolean) => void;
 }
 
-export function MapPage({ nodes, mqttNodes }: Props) {
-  const [showMesh, setShowMesh] = useState(true);
-  const [showMqtt, setShowMqtt] = useState(true);
+export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, setShowMqtt }: Props) {
   const [selected, setSelected] = useState<SelectedNode | null>(null);
+
+  // Clear popup when the relevant source is hidden
+  useEffect(() => {
+    if (!showMesh && selected?.source === "mesh") setSelected(null);
+  }, [showMesh]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!showMqtt && selected?.source === "mqtt") setSelected(null);
+  }, [showMqtt]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const mappableMesh = nodes.filter((n) => n.latitude != null && n.longitude != null);
   const mappableMqtt = mqttNodes.filter((n) => n.latitude != null && n.longitude != null);
@@ -165,24 +175,6 @@ export function MapPage({ nodes, mqttNodes }: Props) {
         )}
       </Map>
 
-      {/* Filter toggles — top left */}
-      <div style={styles.filters}>
-        <button
-          style={filterBtnStyle(showMesh)}
-          onClick={() => { setShowMesh((v) => !v); if (selected?.source === "mesh") setSelected(null); }}
-        >
-          <span style={{ ...styles.filterDot, border: "2px solid #94a3b8", background: "#0f172a" }} />
-          Mesh {mappableMesh.length > 0 && <span style={styles.filterCount}>{mappableMesh.length}</span>}
-        </button>
-        <button
-          style={filterBtnStyle(showMqtt)}
-          onClick={() => { setShowMqtt((v) => !v); if (selected?.source === "mqtt") setSelected(null); }}
-        >
-          <span style={{ ...styles.filterDot, border: "2px dashed #94a3b8", background: "#0f172a" }} />
-          MQTT {mappableMqtt.length > 0 && <span style={styles.filterCount}>{mappableMqtt.length}</span>}
-        </button>
-      </div>
-
       {/* Legend — bottom left */}
       <div style={styles.legend}>
         <span style={styles.legendItem}>
@@ -286,22 +278,6 @@ function MqttPopup({ node }: { node: MqttNode }) {
   );
 }
 
-function filterBtnStyle(active: boolean): React.CSSProperties {
-  return {
-    display: "flex",
-    alignItems: "center",
-    gap: "0.4rem",
-    background: active ? "#1e3a5f" : "#0f172a",
-    border: `1px solid ${active ? "#3b82f6" : "#334155"}`,
-    color: active ? "#e2e8f0" : "#64748b",
-    padding: "0.3rem 0.65rem",
-    borderRadius: "0.375rem",
-    cursor: "pointer",
-    fontSize: "0.75rem",
-    fontFamily: "monospace",
-  };
-}
-
 const styles: Record<string, React.CSSProperties> = {
   wrap: {
     flex: 1,
@@ -331,28 +307,6 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: "50%",
     border: "2px dashed #22c55e",
     pointerEvents: "none",
-  },
-  filters: {
-    position: "absolute",
-    top: "0.75rem",
-    left: "0.75rem",
-    zIndex: 10,
-    display: "flex",
-    gap: "0.4rem",
-  },
-  filterDot: {
-    width: "0.7rem",
-    height: "0.7rem",
-    borderRadius: "50%",
-    display: "inline-block",
-    flexShrink: 0,
-  },
-  filterCount: {
-    background: "#334155",
-    borderRadius: "9999px",
-    padding: "0 0.3rem",
-    fontSize: "0.65rem",
-    marginLeft: "0.15rem",
   },
   legend: {
     position: "absolute",

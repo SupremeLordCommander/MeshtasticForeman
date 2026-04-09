@@ -9,6 +9,20 @@ import { LogsPage } from "./pages/LogsPage.js";
 import logo from "./assets/logo.png";
 
 type Tab = "nodes" | "map" | "activity" | "logs" | "overrides";
+type ActivityWindow = "5m" | "15m" | "1h" | "all";
+type ActivitySource = "all" | "mesh" | "mqtt";
+type LogsLevel = "all" | "log" | "warn" | "error";
+
+const KNOWN_TAGS = ["devices", "mqtt", "ws", "db", "foreman"] as const;
+type TagFilter = "all" | typeof KNOWN_TAGS[number];
+
+const TAG_COLORS: Record<string, string> = {
+  devices: "#60a5fa",
+  mqtt:    "#34d399",
+  ws:      "#a78bfa",
+  db:      "#fb923c",
+  foreman: "#94a3b8",
+};
 
 /** Apply fallback lat/lon/altitude from overrides when the node has no GPS data. */
 function applyNodeOverrides<T extends { nodeId: number; latitude: number | null; longitude: number | null; altitude: number | null; longName?: string | null; shortName?: string | null }>(
@@ -23,7 +37,6 @@ function applyNodeOverrides<T extends { nodeId: number; latitude: number | null;
       latitude:  n.latitude  ?? ov.latitude,
       longitude: n.longitude ?? ov.longitude,
       altitude:  n.altitude  ?? ov.altitude,
-      // Apply alias only when the node has no name of its own
       longName:  ("longName" in n  ? n.longName  : null) ?? ov.aliasName ?? null,
       shortName: ("shortName" in n ? n.shortName : null) ?? null,
     };
@@ -40,6 +53,20 @@ export function App() {
   const [mqttEnabled, setMqttEnabled] = useState(false);
   const [connected, setConnected] = useState(false);
   const [tab, setTab] = useState<Tab>("nodes");
+
+  // ── Map filters ────────────────────────────────────────────────────────────
+  const [showMesh, setShowMesh] = useState(true);
+  const [showMqtt, setShowMqtt] = useState(true);
+
+  // ── Activity filters ───────────────────────────────────────────────────────
+  const [activityWindow, setActivityWindow] = useState<ActivityWindow>("15m");
+  const [activitySource, setActivitySource] = useState<ActivitySource>("all");
+  const [activityPaused, setActivityPaused] = useState(false);
+
+  // ── Logs filters ───────────────────────────────────────────────────────────
+  const [logsLevel, setLogsLevel] = useState<LogsLevel>("all");
+  const [logsTag, setLogsTag] = useState<TagFilter>("all");
+  const [logsPaused, setLogsPaused] = useState(false);
 
   const loadOverrides = useCallback(async () => {
     try {
@@ -141,8 +168,14 @@ export function App() {
   const effectiveNodes     = applyNodeOverrides(nodes,     overrides);
   const effectiveMqttNodes = applyNodeOverrides(mqttNodes, overrides);
 
-  // Nodes that have no GPS data and no override with a location already configured —
-  // shown on the Overrides tab so the user can decide which to annotate.
+  // Counts for map filter buttons
+  const mappableMeshCount = effectiveNodes.filter((n) => n.latitude != null && n.longitude != null).length;
+  const mappableMqttCount = effectiveMqttNodes.filter((n) => n.latitude != null && n.longitude != null).length;
+
+  // Tag counts for log filter buttons
+  const logTagCounts: Record<string, number> = {};
+  for (const e of logs) logTagCounts[e.tag] = (logTagCounts[e.tag] ?? 0) + 1;
+
   const noLocationNodes: Array<{ nodeId: number; longName: string | null; shortName: string | null }> = (() => {
     const seen = new Map<number, { nodeId: number; longName: string | null; shortName: string | null }>();
     for (const n of nodes) {
@@ -151,7 +184,6 @@ export function App() {
     for (const n of mqttNodes) {
       if (n.latitude == null && !seen.has(n.nodeId)) seen.set(n.nodeId, { nodeId: n.nodeId, longName: n.longName, shortName: n.shortName });
     }
-    // Remove nodes that already have a location override
     for (const [id, ov] of overrides) {
       if (ov.latitude != null) seen.delete(id);
     }
@@ -176,25 +208,114 @@ export function App() {
             Overrides {overrides.size > 0 && <span style={styles.tabCount}>{overrides.size}</span>}
           </button>
         </nav>
-        <button
-          onClick={toggleMqtt}
-          style={{
-            marginLeft: "auto",
-            background: mqttEnabled ? "#166534" : "#1e293b",
-            border: `1px solid ${mqttEnabled ? "#16a34a" : "#ef4444"}`,
-            color: mqttEnabled ? "#4ade80" : "#f87171",
-            padding: "0.2rem 0.7rem",
-            borderRadius: "0.25rem",
-            cursor: "pointer",
-            fontSize: "0.75rem",
-            fontFamily: "monospace",
-          }}
-        >
-          MQTT {mqttEnabled ? "ON" : "OFF"}
-        </button>
-        <span style={{ ...styles.badge, background: connected ? "#22c55e" : "#ef4444" }}>
-          {connected ? "connected" : "disconnected"}
-        </span>
+
+        {/* ── Tab-specific filters ───────────────────────────────────────── */}
+        <div style={styles.filterGroup}>
+
+          {tab === "map" && (
+            <>
+              <span style={styles.filterLabel}>Show:</span>
+              <button
+                style={hdrFilterBtn(showMesh)}
+                onClick={() => setShowMesh((v) => !v)}
+              >
+                <span style={{ ...styles.dotBase, border: "2px solid #94a3b8", background: "#0f172a" }} />
+                Mesh
+                {mappableMeshCount > 0 && <span style={styles.hdrCount}>{mappableMeshCount}</span>}
+              </button>
+              <button
+                style={hdrFilterBtn(showMqtt)}
+                onClick={() => setShowMqtt((v) => !v)}
+              >
+                <span style={{ ...styles.dotBase, border: "2px dashed #94a3b8", background: "#0f172a" }} />
+                MQTT
+                {mappableMqttCount > 0 && <span style={styles.hdrCount}>{mappableMqttCount}</span>}
+              </button>
+            </>
+          )}
+
+          {tab === "activity" && (
+            <>
+              <span style={styles.filterLabel}>Window:</span>
+              {(["5m", "15m", "1h", "all"] as ActivityWindow[]).map((w) => (
+                <button key={w} style={hdrFilterBtn(activityWindow === w)} onClick={() => setActivityWindow(w)}>{w}</button>
+              ))}
+              <span style={{ ...styles.filterLabel, marginLeft: "0.4rem" }}>Source:</span>
+              {(["all", "mesh", "mqtt"] as ActivitySource[]).map((s) => (
+                <button
+                  key={s}
+                  style={{
+                    ...hdrFilterBtn(activitySource === s),
+                    color: activitySource === s ? "#fff" : s === "mesh" ? "#60a5fa" : s === "mqtt" ? "#34d399" : undefined,
+                  }}
+                  onClick={() => setActivitySource(s)}
+                >{s}</button>
+              ))}
+              <button
+                style={{ ...hdrFilterBtn(activityPaused), marginLeft: "0.25rem" }}
+                onClick={() => setActivityPaused((p) => !p)}
+              >
+                {activityPaused ? "▶ Resume" : "⏸ Pause"}
+              </button>
+            </>
+          )}
+
+          {tab === "logs" && (
+            <>
+              <span style={styles.filterLabel}>Level:</span>
+              {(["all", "log", "warn", "error"] as LogsLevel[]).map((l) => (
+                <button
+                  key={l}
+                  style={{
+                    ...hdrFilterBtn(logsLevel === l),
+                    color: logsLevel === l ? "#fff" : l === "warn" ? "#fbbf24" : l === "error" ? "#f87171" : undefined,
+                  }}
+                  onClick={() => setLogsLevel(l)}
+                >{l}</button>
+              ))}
+              <span style={{ ...styles.filterLabel, marginLeft: "0.4rem" }}>Tag:</span>
+              <button style={hdrFilterBtn(logsTag === "all")} onClick={() => setLogsTag("all")}>all</button>
+              {KNOWN_TAGS.map((t) => (
+                <button
+                  key={t}
+                  style={{ ...hdrFilterBtn(logsTag === t), color: logsTag === t ? "#fff" : TAG_COLORS[t] }}
+                  onClick={() => setLogsTag(t)}
+                >
+                  {t}
+                  {logTagCounts[t] ? <span style={styles.hdrCount}>{logTagCounts[t]}</span> : null}
+                </button>
+              ))}
+              <button
+                style={{ ...hdrFilterBtn(logsPaused), marginLeft: "0.25rem" }}
+                onClick={() => setLogsPaused((p) => !p)}
+              >
+                {logsPaused ? "▶ Resume" : "⏸ Pause"}
+              </button>
+            </>
+          )}
+
+          {/* Divider */}
+          <div style={styles.divider} />
+
+          <button
+            onClick={toggleMqtt}
+            style={{
+              background: mqttEnabled ? "#166534" : "#1e293b",
+              border: `1px solid ${mqttEnabled ? "#16a34a" : "#ef4444"}`,
+              color: mqttEnabled ? "#4ade80" : "#f87171",
+              padding: "0.2rem 0.7rem",
+              borderRadius: "0.25rem",
+              cursor: "pointer",
+              fontSize: "0.75rem",
+              fontFamily: "monospace",
+            }}
+          >
+            MQTT {mqttEnabled ? "ON" : "OFF"}
+          </button>
+          <span style={{ ...styles.badge, background: connected ? "#22c55e" : "#ef4444" }}>
+            {connected ? "connected" : "disconnected"}
+          </span>
+        </div>
       </header>
 
       {tab === "nodes" && (
@@ -202,15 +323,36 @@ export function App() {
           <NodesPage devices={devices} nodes={effectiveNodes} mqttNodes={effectiveMqttNodes} />
         </div>
       )}
-      {tab === "map" && <MapPage nodes={effectiveNodes} mqttNodes={effectiveMqttNodes} />}
+      {tab === "map" && (
+        <MapPage
+          nodes={effectiveNodes}
+          mqttNodes={effectiveMqttNodes}
+          showMesh={showMesh}
+          setShowMesh={setShowMesh}
+          showMqtt={showMqtt}
+          setShowMqtt={setShowMqtt}
+        />
+      )}
       {tab === "activity" && (
         <div style={{ flex: 1, overflowY: "auto" }}>
-          <ActivityPage entries={activity} />
+          <ActivityPage
+            entries={activity}
+            window={activityWindow}
+            sourceFilter={activitySource}
+            paused={activityPaused}
+            setPaused={setActivityPaused}
+          />
         </div>
       )}
       {tab === "logs" && (
         <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
-          <LogsPage entries={logs} />
+          <LogsPage
+            entries={logs}
+            levelFilter={logsLevel}
+            tagFilter={logsTag}
+            paused={logsPaused}
+            setPaused={setLogsPaused}
+          />
         </div>
       )}
       {tab === "overrides" && (
@@ -255,6 +397,22 @@ function tabStyle(active: boolean): React.CSSProperties {
   };
 }
 
+function hdrFilterBtn(active: boolean): React.CSSProperties {
+  return {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "0.3rem",
+    background: active ? "#1e3a5f" : "#0f172a",
+    border: `1px solid ${active ? "#3b82f6" : "#1e293b"}`,
+    color: active ? "#e2e8f0" : "#64748b",
+    padding: "0.15rem 0.5rem",
+    borderRadius: "0.25rem",
+    cursor: "pointer",
+    fontSize: "0.72rem",
+    fontFamily: "monospace",
+  };
+}
+
 const styles: Record<string, React.CSSProperties> = {
   page: {
     fontFamily: "monospace",
@@ -267,10 +425,11 @@ const styles: Record<string, React.CSSProperties> = {
   header: {
     display: "flex",
     alignItems: "center",
-    gap: "1rem",
-    padding: "1rem 2rem",
+    gap: "0.75rem",
+    padding: "0.65rem 1.25rem",
     borderBottom: "1px solid #1e293b",
     flexShrink: 0,
+    flexWrap: "wrap",
   },
   logo: {
     height: "2rem",
@@ -293,6 +452,39 @@ const styles: Record<string, React.CSSProperties> = {
     padding: "0 0.35rem",
     fontSize: "0.7rem",
     marginLeft: "0.3rem",
+  },
+  filterGroup: {
+    marginLeft: "auto",
+    display: "flex",
+    alignItems: "center",
+    gap: "0.3rem",
+    flexWrap: "wrap",
+  },
+  filterLabel: {
+    color: "#475569",
+    fontSize: "0.7rem",
+    whiteSpace: "nowrap",
+  },
+  dotBase: {
+    width: "0.6rem",
+    height: "0.6rem",
+    borderRadius: "50%",
+    display: "inline-block",
+    flexShrink: 0,
+  },
+  hdrCount: {
+    background: "#334155",
+    borderRadius: "9999px",
+    padding: "0 0.3rem",
+    fontSize: "0.6rem",
+    marginLeft: "0.1rem",
+  },
+  divider: {
+    width: "1px",
+    height: "1.2rem",
+    background: "#1e293b",
+    margin: "0 0.2rem",
+    flexShrink: 0,
   },
   badge: {
     padding: "0.15rem 0.5rem",

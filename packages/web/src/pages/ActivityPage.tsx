@@ -78,20 +78,22 @@ function StatTable({ title, rows, color }: {
 
 interface Props {
   entries: ActivityEntry[];
+  window: Window;
+  sourceFilter: "all" | "mesh" | "mqtt";
+  paused: boolean;
+  setPaused: (fn: (p: boolean) => boolean) => void;
 }
 
-export function ActivityPage({ entries }: Props) {
-  const [window, setWindow] = useState<Window>("15m");
-  const [sourceFilter, setSourceFilter] = useState<"all" | "mesh" | "mqtt">("all");
-  const [paused, setPaused] = useState(false);
+export function ActivityPage({ entries, window, sourceFilter, paused, setPaused }: Props) {
   const [frozen, setFrozen] = useState<ActivityEntry[]>([]);
   const feedRef = useRef<HTMLDivElement>(null);
   const autoScroll = useRef(true);
 
-  // Freeze the display while paused
+  // Snapshot entries when pausing; clear when resuming
   useEffect(() => {
-    if (!paused) setFrozen([]);
-  }, [paused]);
+    if (paused) setFrozen(filterWindow(entries, window));
+    else setFrozen([]);
+  }, [paused]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const applySource = (list: ActivityEntry[]) =>
     sourceFilter === "all" ? list : list.filter((e) => e.source === sourceFilter);
@@ -116,9 +118,6 @@ export function ActivityPage({ entries }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [entries, window, sourceFilter],
   );
-  const meshCount = windowed.filter((e) => e.source === "mesh").length;
-  const mqttCount = windowed.filter((e) => e.source === "mqtt").length;
-  const total     = windowed.length;
 
   const byPortnum = countBy(windowed, (e) => e.portnum);
   const byRegion  = countBy(
@@ -128,41 +127,6 @@ export function ActivityPage({ entries }: Props) {
 
   return (
     <div style={styles.page}>
-      {/* Controls */}
-      <div style={styles.controls}>
-        <span style={styles.label}>Window:</span>
-        {(["5m", "15m", "1h", "all"] as Window[]).map((w) => (
-          <button key={w} style={{ ...styles.btn, ...(window === w ? styles.btnActive : {}) }}
-            onClick={() => setWindow(w)}>{w}</button>
-        ))}
-        <span style={{ marginLeft: "0.5rem", color: "#64748b", fontSize: "0.75rem" }}>Source:</span>
-        {(["all", "mesh", "mqtt"] as const).map((s) => (
-          <button key={s} style={{ ...styles.btn, ...(sourceFilter === s ? styles.btnActive : {}),
-            ...(s === "mesh" ? { color: sourceFilter === s ? "#fff" : "#60a5fa" } : {}),
-            ...(s === "mqtt" ? { color: sourceFilter === s ? "#fff" : "#34d399" } : {}),
-          }}
-            onClick={() => setSourceFilter(s)}>{s}</button>
-        ))}
-        <span style={{ marginLeft: "1rem", color: "#475569", fontSize: "0.75rem" }}>
-          {total} packets
-          {total > 0 && (
-            <> — <span style={{ color: "#60a5fa" }}>{meshCount} mesh</span>
-              {" / "}
-              <span style={{ color: "#34d399" }}>{mqttCount} mqtt</span>
-            </>
-          )}
-        </span>
-        <button
-          style={{ ...styles.btn, marginLeft: "auto", ...(paused ? styles.btnActive : {}) }}
-          onClick={() => {
-            if (!paused) setFrozen(filterWindow(entries, window));
-            setPaused((p) => !p);
-          }}
-        >
-          {paused ? "▶ Resume" : "⏸ Pause"}
-        </button>
-      </div>
-
       <div style={styles.body}>
         {/* Live feed */}
         <div style={styles.feedWrap}>
@@ -204,15 +168,7 @@ export function ActivityPage({ entries }: Props) {
 // ---------------------------------------------------------------------------
 
 const styles: Record<string, React.CSSProperties> = {
-  page:     { padding: "1rem 1.5rem", display: "flex", flexDirection: "column", height: "100%", boxSizing: "border-box" },
-  controls: { display: "flex", alignItems: "center", gap: "0.35rem", marginBottom: "0.75rem", flexWrap: "wrap" },
-  label:    { color: "#64748b", fontSize: "0.75rem", marginRight: "0.15rem" },
-  btn: {
-    background: "#1e293b", border: "1px solid #334155", color: "#94a3b8",
-    padding: "0.2rem 0.6rem", borderRadius: "0.25rem", cursor: "pointer",
-    fontSize: "0.75rem", fontFamily: "monospace",
-  },
-  btnActive: { background: "#3b82f6", borderColor: "#3b82f6", color: "#fff" },
+  page: { padding: "1rem 1.5rem", display: "flex", flexDirection: "column", height: "100%", boxSizing: "border-box" },
   body:      { display: "flex", gap: "1rem", flex: 1, minHeight: 0 },
   feedWrap:  { flex: 1, display: "flex", flexDirection: "column", minHeight: 0 },
   feedHeader: {
