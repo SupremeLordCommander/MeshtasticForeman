@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import type { NodeInfo, MqttNode, DeviceInfo, Message } from "@foreman/shared";
 import { foremanClient } from "../ws/client.js";
+import { useConversation, loadConversation, addOptimisticMessage } from "../store/messages.js";
 
 interface Props {
   nodeId: number;
@@ -46,36 +47,21 @@ export function NodeDetailPanel({ nodeId, mesh, mqtt, devices, onClose }: Props)
   const deviceId = devices.find((d) => d.status === "connected")?.id ?? null;
   const primary = mesh ?? mqtt!;
 
-  const [messages, setMessages] = useState<Message[]>([]);
+  const messages = useConversation(nodeId);
   const [msgText, setMsgText] = useState("");
   const [channel, setChannel] = useState(0);
   const [sending, setSending] = useState(false);
-  const [sentId, setSentId] = useState<number | null>(null);
   const [pendingAction, setPendingAction] = useState<"position" | "traceroute" | null>(null);
   const [traceroute, setTraceroute] = useState<{ route: number[]; routeBack: number[] } | null>(null);
   const msgEndRef = useRef<HTMLDivElement>(null);
 
-  // Request message history and listen for new messages / traceroute results
+  // Request message history and listen for traceroute results
   useEffect(() => {
     if (deviceId) {
-      foremanClient.send({
-        type: "messages:request-history",
-        payload: { deviceId, toNodeId: nodeId, limit: 100 },
-      });
+      loadConversation(deviceId, nodeId);
     }
 
     const off = foremanClient.on((event) => {
-      if (event.type === "message:received") {
-        const m = event.payload;
-        if (m.fromNodeId === nodeId || m.toNodeId === nodeId) {
-          setMessages((prev) => [...prev, m]);
-        }
-      }
-      if (event.type === "message:history") {
-        setMessages(event.payload.filter(
-          (m) => m.fromNodeId === nodeId || m.toNodeId === nodeId
-        ));
-      }
       if (event.type === "traceroute:result" && event.payload.nodeId === nodeId) {
         setTraceroute({ route: event.payload.route, routeBack: event.payload.routeBack });
         setPendingAction(null);
@@ -115,10 +101,9 @@ export function NodeDetailPanel({ nodeId, mesh, mqtt, devices, onClose }: Props)
       ackAt: null,
       ackError: null,
     };
-    setMessages((prev) => [...prev, optimistic]);
+    addOptimisticMessage(optimistic);
     setMsgText("");
-    setSentId(optimistic.packetId);
-    setTimeout(() => { setSending(false); setSentId(null); }, 5000);
+    setTimeout(() => { setSending(false); }, 5000);
   }
 
   function requestPosition() {
@@ -217,14 +202,28 @@ export function NodeDetailPanel({ nodeId, mesh, mqtt, devices, onClose }: Props)
                   <div style={styles.noMessages}>No messages with this node.</div>
                 ) : (
                   messages.map((m) => {
-                    const outgoing = m.fromNodeId !== nodeId;
+                    const outgoing = m.role === "sent";
                     return (
                       <div key={m.id} style={messageBubbleStyle(outgoing)}>
-                        <div style={styles.msgText}>{m.text}</div>
+                        {m.role === "relayed" && (
+                          <div style={styles.relayedLabel}>relayed</div>
+                        )}
+                        <div style={{ ...styles.msgText, opacity: m.role === "relayed" ? 0.5 : 1 }}>
+                          {m.text ?? <em style={{ color: "#475569" }}>encrypted</em>}
+                        </div>
                         <div style={styles.msgMeta}>
                           {formatTime(m.rxTime)}
                           {m.rxSnr != null && ` · SNR ${m.rxSnr.toFixed(1)}`}
                           {m.viaMqtt && " · MQTT"}
+                          {outgoing && m.ackStatus === "pending" && (
+                            <span style={styles.ackPending} title="Waiting for ACK">⏳</span>
+                          )}
+                          {outgoing && m.ackStatus === "acked" && (
+                            <span style={styles.ackOk} title="Delivered">✓</span>
+                          )}
+                          {outgoing && m.ackStatus === "error" && (
+                            <span style={styles.ackErr} title={m.ackError ?? "Delivery failed"}>✗</span>
+                          )}
                         </div>
                       </div>
                     );
@@ -436,6 +435,29 @@ const styles: Record<string, React.CSSProperties> = {
     color: "#475569",
     fontSize: "0.68rem",
     marginTop: "0.2rem",
+    display: "flex",
+    alignItems: "center",
+    gap: "0.3rem",
+  },
+  relayedLabel: {
+    color: "#475569",
+    fontSize: "0.62rem",
+    textTransform: "uppercase" as const,
+    letterSpacing: "0.06em",
+    marginBottom: "0.15rem",
+  },
+  ackPending: {
+    fontSize: "0.7rem",
+    opacity: 0.6,
+  },
+  ackOk: {
+    color: "#22c55e",
+    fontSize: "0.75rem",
+  },
+  ackErr: {
+    color: "#ef4444",
+    fontSize: "0.75rem",
+    cursor: "help",
   },
   compose: {
     display: "flex",
