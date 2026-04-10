@@ -110,6 +110,10 @@ export function NodeDetailPanel({ nodeId, mesh, mqtt, devices, onClose }: Props)
       hopLimit: null,
       wantAck: true,
       viaMqtt: false,
+      role: "sent" as const,
+      ackStatus: "pending" as const,
+      ackAt: null,
+      ackError: null,
     };
     setMessages((prev) => [...prev, optimistic]);
     setMsgText("");

@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import { Buffer } from "node:buffer";
+import { fromBinary } from "@bufbuild/protobuf";
 import type { PGlite } from "@electric-sql/pglite";
 import type { ServerEvent, Message, NodeInfo, DeviceConfig, Channel } from "@foreman/shared";
 import { MeshDevice, Types, Protobuf } from "@meshtastic/core";
@@ -289,6 +290,10 @@ export class DeviceManager extends EventEmitter {
     return this.batteryLevels.get(id) ?? null;
   }
 
+  getMyNodeId(deviceId: string): number | undefined {
+    return this.myNodeIds.get(deviceId);
+  }
+
   async listNodes(deviceId: string): Promise<NodeInfo[]> {
     const { rows } = await this.db.query<{
       node_id: number;
@@ -331,7 +336,8 @@ export class DeviceManager extends EventEmitter {
   ): Promise<Message[]> {
     let query = `
       SELECT id, packet_id, from_node_id, to_node_id, channel_index, text,
-             rx_time, rx_snr, rx_rssi, hop_limit, want_ack, via_mqtt
+             rx_time, rx_snr, rx_rssi, hop_limit, want_ack, via_mqtt, role,
+             ack_status, ack_at, ack_error
       FROM messages
       WHERE device_id = $1`;
     const params: unknown[] = [deviceId];
@@ -358,13 +364,17 @@ export class DeviceManager extends EventEmitter {
       from_node_id: number;
       to_node_id: number;
       channel_index: number;
-      text: string;
+      text: string | null;
       rx_time: string;
       rx_snr: number | null;
       rx_rssi: number | null;
       hop_limit: number | null;
       want_ack: boolean;
       via_mqtt: boolean;
+      role: string;
+      ack_status: string | null;
+      ack_at: string | null;
+      ack_error: string | null;
     }>(query, params);
 
     return rows.map((r) => ({
@@ -380,6 +390,10 @@ export class DeviceManager extends EventEmitter {
       hopLimit: r.hop_limit,
       wantAck: r.want_ack,
       viaMqtt: r.via_mqtt,
+      role: r.role as Message["role"],
+      ackStatus: r.ack_status as Message["ackStatus"],
+      ackAt: r.ack_at,
+      ackError: r.ack_error,
     }));
   }
 
@@ -503,8 +517,8 @@ export class DeviceManager extends EventEmitter {
     const rxTime = packet.rxTime.toISOString();
 
     await this.db.query(
-      `INSERT INTO messages(id, packet_id, device_id, from_node_id, to_node_id, channel_index, text, rx_time)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `INSERT INTO messages(id, packet_id, device_id, from_node_id, to_node_id, channel_index, text, rx_time, role)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'received')
        ON CONFLICT(id) DO NOTHING`,
       [id, packet.id, deviceId, packet.from, packet.to, packet.channel, packet.data, rxTime]
     );
@@ -525,6 +539,10 @@ export class DeviceManager extends EventEmitter {
         hopLimit: null,
         wantAck: false,
         viaMqtt: false,
+        role: "received",
+        ackStatus: null,
+        ackAt: null,
+        ackError: null,
       },
     };
     this.emit("event", event);
@@ -655,6 +673,79 @@ export class DeviceManager extends EventEmitter {
       },
     };
     this.emit("event", event);
+
+    // ACK/NACK detection: ROUTING_APP (5) decoded packets contain delivery confirmations.
+    // requestId links back to the original sent message's packet_id.
+    const ROUTING_APP = 5;
+    if (portnum === ROUTING_APP && isDecoded) {
+      const requestId: number = p.payloadVariant?.value?.requestId ?? 0;
+      const payload: Uint8Array | undefined = p.payloadVariant?.value?.payload;
+      if (requestId !== 0 && payload?.length) {
+        try {
+          const routing = fromBinary(Protobuf.Mesh.RoutingSchema, payload);
+          if (routing.variant.case === "errorReason") {
+            const isAck = routing.variant.value === Protobuf.Mesh.Routing_Error.NONE;
+            const ackAt = new Date().toISOString();
+            const ackError = isAck
+              ? null
+              : ((Protobuf.Mesh.Routing_Error as Record<number, string>)[routing.variant.value] ?? String(routing.variant.value));
+
+            const { rows } = await this.db.query<{ id: string }>(
+              `UPDATE messages
+               SET ack_status = $1, ack_at = $2, ack_error = $3
+               WHERE packet_id = $4 AND device_id = $5 AND role = 'sent' AND ack_status = 'pending'
+               RETURNING id`,
+              [isAck ? "acked" : "error", ackAt, ackError, requestId, deviceId]
+            );
+
+            if (rows[0]) {
+              const ackEvent: ServerEvent = {
+                type: "message:ack",
+                payload: {
+                  messageId: rows[0].id,
+                  packetId: requestId,
+                  status: isAck ? "acked" : "error",
+                  ackAt,
+                  ackError,
+                },
+              };
+              this.emit("event", ackEvent);
+              console.log(`[devices] ACK ${isAck ? "✓" : "✗"} for packet ${requestId}${ackError ? ` (${ackError})` : ""}`);
+            }
+          }
+        } catch (err) {
+          console.warn("[devices] failed to decode routing packet:", err);
+        }
+      }
+    }
+
+    // Store encrypted text packets we forward for other nodes (role='relayed').
+    // onMessagePacket already handles broadcast (0xffffffff) and direct-to-us messages,
+    // so we only need to capture encrypted DMs passing through us.
+    const TEXT_MESSAGE_APP = 1;
+    const BROADCAST = 0xffffffff;
+    const myNodeId = this.myNodeIds.get(deviceId);
+    const toNodeId: number = p.to ?? 0;
+    if (
+      portnum === TEXT_MESSAGE_APP &&
+      isEncrypted &&
+      fromNodeId !== 0 &&
+      fromNodeId !== myNodeId &&
+      toNodeId !== myNodeId &&
+      toNodeId !== BROADCAST
+    ) {
+      const relayId = randomUUID();
+      await this.db.query(
+        `INSERT INTO messages(id, packet_id, device_id, from_node_id, to_node_id, channel_index,
+           text, rx_time, rx_snr, rx_rssi, hop_limit, want_ack, via_mqtt, role)
+         VALUES ($1, $2, $3, $4, $5, $6, NULL, $7, $8, $9, $10, $11, $12, 'relayed')`,
+        [
+          relayId, p.id ?? 0, deviceId, fromNodeId, toNodeId, p.channel ?? 0,
+          rxTime, p.rxSnr || null, p.rxRssi || null, p.hopLimit || null,
+          p.wantAck ?? false, p.viaMqtt ?? false,
+        ]
+      );
+    }
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
