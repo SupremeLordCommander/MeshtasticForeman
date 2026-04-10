@@ -41,6 +41,7 @@ export default defineConfig(({ mode }) => {
         },
       },
     },
+    envDir: resolve(__dirname, "../../"),
     build: {
       outDir: "dist",
       emptyOutDir: true,
