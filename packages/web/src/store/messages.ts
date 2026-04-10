@@ -1,0 +1,165 @@
+import { useState, useEffect } from "react";
+import type { Message } from "@foreman/shared";
+import { foremanClient } from "../ws/client.js";
+
+// ---------------------------------------------------------------------------
+// Module-level store — Map from "other node id" to Message[]
+// ---------------------------------------------------------------------------
+
+const conversations = new Map<number, Message[]>();
+const listeners = new Set<() => void>();
+
+function notify() {
+  for (const fn of listeners) fn();
+}
+
+function otherNodeId(msg: Message): number {
+  return msg.role === "sent" ? msg.toNodeId : msg.fromNodeId;
+}
+
+function addOrUpdate(msg: Message) {
+  const key = otherNodeId(msg);
+  const existing = conversations.get(key) ?? [];
+  const idx = existing.findIndex((m) => m.id === msg.id);
+  if (idx >= 0) {
+    const next = [...existing];
+    next[idx] = msg;
+    conversations.set(key, next);
+  } else {
+    conversations.set(key, [...existing, msg]);
+  }
+  notify();
+}
+
+// ---------------------------------------------------------------------------
+// Init — wire WS events once
+// ---------------------------------------------------------------------------
+
+let initialized = false;
+
+export function initMessageStore() {
+  if (initialized) return;
+  initialized = true;
+
+  foremanClient.on((event) => {
+    if (event.type === "message:received") {
+      addOrUpdate(event.payload);
+    }
+
+    if (event.type === "message:sent") {
+      const msg = event.payload;
+      const convo = conversations.get(msg.toNodeId);
+      if (convo) {
+        const sentTime = new Date(msg.rxTime).getTime();
+        const optIdx = convo.findIndex(
+          (m) =>
+            m.id.startsWith("local-") &&
+            m.toNodeId === msg.toNodeId &&
+            Math.abs(new Date(m.rxTime).getTime() - sentTime) < 5000
+        );
+        if (optIdx >= 0) {
+          const next = [...convo];
+          next[optIdx] = msg;
+          conversations.set(msg.toNodeId, next);
+          notify();
+          return;
+        }
+      }
+      addOrUpdate(msg);
+    }
+
+    if (event.type === "message:history") {
+      // Group by other-node, replace conversation, preserve unsent optimistics
+      const grouped = new Map<number, Message[]>();
+      for (const msg of event.payload) {
+        const key = otherNodeId(msg);
+        const arr = grouped.get(key) ?? [];
+        arr.push(msg);
+        grouped.set(key, arr);
+      }
+      for (const [key, newMsgs] of grouped) {
+        const existing = conversations.get(key) ?? [];
+        const optimistic = existing.filter((m) => m.id.startsWith("local-"));
+        const merged = [...newMsgs, ...optimistic].sort(
+          (a, b) => new Date(a.rxTime).getTime() - new Date(b.rxTime).getTime()
+        );
+        conversations.set(key, merged);
+      }
+      notify();
+    }
+
+    if (event.type === "message:ack") {
+      const { messageId, status, ackAt, ackError } = event.payload;
+      for (const [key, msgs] of conversations) {
+        const idx = msgs.findIndex((m) => m.id === messageId);
+        if (idx >= 0) {
+          const next = [...msgs];
+          next[idx] = { ...next[idx], ackStatus: status, ackAt, ackError };
+          conversations.set(key, next);
+          notify();
+          break;
+        }
+      }
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Imperative API
+// ---------------------------------------------------------------------------
+
+export function addOptimisticMessage(msg: Message) {
+  const key = otherNodeId(msg);
+  const existing = conversations.get(key) ?? [];
+  conversations.set(key, [...existing, msg]);
+  notify();
+}
+
+export function loadConversation(deviceId: string, nodeId: number) {
+  foremanClient.send({
+    type: "messages:request-history",
+    payload: { deviceId, toNodeId: nodeId, limit: 100 },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// React hooks
+// ---------------------------------------------------------------------------
+
+export function useConversation(nodeId: number): Message[] {
+  const [, rerender] = useState(0);
+  useEffect(() => {
+    const fn = () => rerender((n) => n + 1);
+    listeners.add(fn);
+    return () => { listeners.delete(fn); };
+  }, []);
+  return conversations.get(nodeId) ?? [];
+}
+
+export interface ConversationSummary {
+  nodeId: number;
+  lastMessage: Message;
+}
+
+export function useConversationList(): ConversationSummary[] {
+  const [, rerender] = useState(0);
+  useEffect(() => {
+    const fn = () => rerender((n) => n + 1);
+    listeners.add(fn);
+    return () => { listeners.delete(fn); };
+  }, []);
+
+  const result: ConversationSummary[] = [];
+  for (const [nodeId, msgs] of conversations) {
+    if (msgs.length === 0) continue;
+    const last = [...msgs].sort(
+      (a, b) => new Date(a.rxTime).getTime() - new Date(b.rxTime).getTime()
+    ).at(-1)!;
+    result.push({ nodeId, lastMessage: last });
+  }
+  return result.sort(
+    (a, b) =>
+      new Date(b.lastMessage.rxTime).getTime() -
+      new Date(a.lastMessage.rxTime).getTime()
+  );
+}

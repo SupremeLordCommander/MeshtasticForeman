@@ -207,51 +207,32 @@ We built the full message storage and delivery tracking pipeline:
 
 ---
 
-## Messaging UI — Next Step (STOP HERE, resume on other computer)
+## Messaging UI — DONE
 
-This is the next thing to build. Three parts, in order:
+All three parts completed:
 
-### Part 1 — Fix NodeDetailPanel (bugs with new events)
+1. **NodeDetailPanel** — uses `useConversation(nodeId)` from store; handles `message:sent` (replaces optimistic), `message:ack` (updates status), ACK indicators (⏳/✓/✗), relayed messages dimmed with label.
+2. **MessagesPage** (`packages/web/src/pages/MessagesPage.tsx`) — two-panel layout: conversation list left, thread right. "Messages" tab added to main nav.
+3. **Message store** (`packages/web/src/store/messages.ts`) — module-level `Map<nodeId, Message[]>`, initialized once at startup in App.tsx. Both NodeDetailPanel and MessagesPage share state.
 
-`NodeDetailPanel.tsx` at `packages/web/src/pages/NodeDetailPanel.tsx` has a mini chat UI that already handles `message:received` and `message:history` but ignores the two new events:
+---
 
-1. **`message:sent` not handled** — when daemon confirms the send (with real `packetId`), the UI ignores it. The optimistic message (`id: local-${Date.now()}`, `packetId: 0`) never gets replaced. Fix: on `message:sent` event, replace the matching optimistic entry with the real message. Match on `toNodeId` equality and `rxTime` proximity (within a few seconds).
+## Future Idea — MQTT Message Bridging (Hop-Limit Bypass)
 
-2. **`message:ack` not handled** — `ackStatus` on displayed messages never changes from `'pending'`. Fix: on `message:ack`, find the message by `event.payload.messageId` in state and update `ackStatus`, `ackAt`, `ackError`.
+The mesh enforces a hard hop limit (default 3). Nodes too far away — or separated by dead zones — can't be reached directly.
 
-3. **Add ACK status indicator** — sent message bubbles should show: clock icon = `'pending'`, checkmark = `'acked'`, X with tooltip = `'error'` (tooltip text = `ackError` value, e.g. `NO_ROUTE`).
+**The idea:** when Foreman wants to send a message to a node it can't reach (or that is beyond hop range), publish the message to the MQTT broker as a properly-formed `ServiceEnvelope` protobuf on the right regional topic. Other Foreman instances (or any MQTT-enabled gateway) subscribed to that topic would receive it and inject it into their local mesh, delivering it to the target node over the last few hops.
 
-### Part 2 — New "Messages" tab
+This is essentially the same thing the official firmware does when `uplink_enabled`/`downlink_enabled` are set on a channel — but we'd be controlling it from the application layer with smarter routing logic.
 
-Add a `"messages"` tab to `App.tsx` (alongside nodes, map, activity, logs, overrides, config).
+**Open questions to plan out:**
+- Distance boundary logic — how do we decide when to go via MQTT vs. direct mesh? Candidates: `hopsAway` threshold, last-heard age, RSSI/SNR floor, or no-route ACK error triggering a retry via MQTT.
+- Which nodes can act as downlink injection points? Need to know which MQTT-connected Foreman instances are "near" the target (GPS bounding box? same region topic?).
+- Do we need a Foreman-to-Foreman coordination channel on MQTT (separate topic) to advertise node coverage areas?
+- Message deduplication — a node might receive the same message both over-the-air and via MQTT downlink.
+- Key/encryption — outbound `ServiceEnvelope` must be encrypted with the channel PSK the target node is listening on. Foreman already stores channel PSKs in the `channels` table.
 
-Two-panel layout:
-
-**Left panel — conversation list**
-- One row per node you've exchanged messages with (query history grouped by `from_node_id`/`to_node_id`)
-- Shows: node short name, last message preview (truncated), timestamp, unread badge
-- Sorted by most recent message time
-- On click: loads that node's thread in the right panel
-
-**Right panel — thread view**
-- Full message thread for selected node
-- Sent messages right-aligned, received left-aligned (standard chat layout)
-- `role='relayed'` shown dimmed with a small "relayed" label
-- ACK status indicators on sent messages (same as Part 1)
-- Channel selector + compose bar at bottom (same as NodeDetailPanel's compose)
-- On mount: sends `messages:request-history` with `toNodeId = selectedNodeId`
-- Appends real-time via `message:received`, `message:sent`; updates via `message:ack`
-
-### Part 3 — Message store (shared state)
-
-Right now `foremanClient.on()` fans raw events to every component. For the Messages tab to stay in sync while not active, and to avoid requesting history every time you switch tabs, create a lightweight module-level store:
-
-- Location: `packages/web/src/store/messages.ts`
-- Data structure: `Map<nodeId, Message[]>` keyed by the "other node" in the conversation
-- Subscribes to `message:received`, `message:sent`, `message:ack` once at startup
-- Exposes a React hook: `useConversation(nodeId)` → `Message[]`
-- Exposes `useConversationList()` → sorted list of `{ nodeId, lastMessage, unreadCount }`
-- The Messages tab and NodeDetailPanel both read from this store instead of managing their own local state
+**Not planning yet — just noting the idea.**
 
 ---
 

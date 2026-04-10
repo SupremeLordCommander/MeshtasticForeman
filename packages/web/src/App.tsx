@@ -7,9 +7,14 @@ import { NodeOverridesPage } from "./pages/NodeOverridesPage.js";
 import { ActivityPage } from "./pages/ActivityPage.js";
 import { LogsPage } from "./pages/LogsPage.js";
 import { DeviceConfigPage } from "./pages/DeviceConfigPage.js";
+import { MessagesPage } from "./pages/MessagesPage.js";
+import { initMessageStore } from "./store/messages.js";
 import logo from "./assets/logo.png";
 
-type Tab = "nodes" | "map" | "activity" | "logs" | "overrides" | "config";
+// Initialize message store once at module load
+initMessageStore();
+
+type Tab = "nodes" | "map" | "messages" | "activity" | "logs" | "overrides" | "config";
 type ActivityWindow = "5m" | "15m" | "1h" | "all";
 type ActivitySource = "all" | "mesh" | "mqtt";
 type LogsLevel = "all" | "log" | "warn" | "error";
@@ -276,6 +281,7 @@ export function App() {
         <nav style={styles.nav}>
           <button style={tabStyle(tab === "nodes")} onClick={() => setTab("nodes")}>Nodes</button>
           <button style={tabStyle(tab === "map")} onClick={() => setTab("map")}>Map</button>
+          <button style={tabStyle(tab === "messages")} onClick={() => setTab("messages")}>Messages</button>
         </nav>
 
         {/* ── System menu ───────────────────────────────────────────────────── */}
@@ -472,6 +478,11 @@ export function App() {
           showMqtt={showMqtt}
           setShowMqtt={setShowMqtt}
         />
+      )}
+      {tab === "messages" && (
+        <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+          <MessagesPage devices={devices} nodes={effectiveNodes} mqttNodes={effectiveMqttNodes} />
+        </div>
       )}
       {tab === "activity" && (
         <div style={{ flex: 1, overflowY: "auto" }}>
