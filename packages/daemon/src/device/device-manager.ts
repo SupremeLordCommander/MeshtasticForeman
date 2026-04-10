@@ -52,6 +52,10 @@ export class DeviceManager extends EventEmitter {
   private lastPacketMs = new Map<string, number>();
   /** Active watchdog timers */
   private watchdogTimers = new Map<string, NodeJS.Timeout>();
+  /** Self node number for each device (populated from onMyNodeInfo) */
+  private myNodeIds = new Map<string, number>();
+  /** Most recent battery level (0–100) for each device */
+  private batteryLevels = new Map<string, number>();
 
   constructor(private readonly db: PGlite) {
     super();
@@ -217,6 +221,22 @@ export class DeviceManager extends EventEmitter {
       );
     });
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    meshDevice.events.onMyNodeInfo.subscribe((info: any) => {
+      const nodeNum: number = info?.myNodeNum ?? 0;
+      if (nodeNum !== 0) {
+        this.myNodeIds.set(id, nodeNum);
+        console.log(`[devices] myNodeInfo ${name} nodeNum=!${nodeNum.toString(16).padStart(8,"0")}`);
+      }
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    meshDevice.events.onTelemetryPacket.subscribe((pkt: any) => {
+      this._handleTelemetry(id, name, pkt).catch((err) =>
+        console.error(`[devices] telemetry error on ${name}:`, err)
+      );
+    });
+
     // Attach to MQTT gateway BEFORE configure so it catches onMyNodeInfo/onChannelPacket
     this.mqttGateway?.attachDevice(id, meshDevice);
 
@@ -249,6 +269,8 @@ export class DeviceManager extends EventEmitter {
     if (!device) return;
 
     this.devices.delete(deviceId);
+    this.myNodeIds.delete(deviceId);
+    this.batteryLevels.delete(deviceId);
     this.mqttGateway?.detachDevice(deviceId);
     await device.transport.disconnect().catch(() => {});
 
@@ -258,6 +280,10 @@ export class DeviceManager extends EventEmitter {
 
   getDevice(id: string) {
     return this.devices.get(id);
+  }
+
+  getBatteryLevel(id: string): number | null {
+    return this.batteryLevels.get(id) ?? null;
   }
 
   async listNodes(deviceId: string): Promise<NodeInfo[]> {
@@ -413,6 +439,7 @@ export class DeviceManager extends EventEmitter {
         lastSeenAt: null,
         hardwareModel: null,
         firmwareVersion: null,
+        batteryLevel: this.batteryLevels.get(id) ?? null,
       },
     };
     this.emit("event", event);
@@ -898,9 +925,58 @@ export class DeviceManager extends EventEmitter {
           lastSeenAt: null,
           hardwareModel: hwModel,
           firmwareVersion: firmware,
+          batteryLevel: this.batteryLevels.get(deviceId) ?? null,
         },
       };
       this.emit("event", event);
     }
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async _handleTelemetry(deviceId: string, name: string, pkt: any) {
+    const variant = pkt?.data?.variant;
+    if (variant?.case !== "deviceMetrics") return;
+
+    const metrics = variant.value;
+    const batteryLevel: number | undefined = metrics?.batteryLevel;
+    if (batteryLevel == null || batteryLevel === 0) return; // 0 typically means "plugged in, no reading"
+
+    const fromNodeId: number = pkt.from ?? 0;
+    const myNodeId = this.myNodeIds.get(deviceId);
+
+    // Only update device battery when the telemetry originates from the device itself
+    if (myNodeId === undefined || fromNodeId !== myNodeId) return;
+
+    const prev = this.batteryLevels.get(deviceId);
+    if (prev === batteryLevel) return; // no change, skip emit
+
+    this.batteryLevels.set(deviceId, batteryLevel);
+    console.log(`[devices] battery ${name} ${batteryLevel}%`);
+
+    const device = this.devices.get(deviceId);
+    if (!device) return;
+
+    // Fetch current hw/firmware to include in the status event
+    const { rows } = await this.db.query<{ hw_model: string | null; firmware: string | null }>(
+      "SELECT hw_model, firmware FROM devices WHERE id = $1",
+      [deviceId]
+    );
+    const row = rows[0];
+
+    const event: ServerEvent = {
+      type: "device:status",
+      payload: {
+        id: deviceId,
+        name: device.name,
+        port: device.port,
+        status: "connected",
+        connectedAt: device.connectedAt,
+        lastSeenAt: null,
+        hardwareModel: row?.hw_model ?? null,
+        firmwareVersion: row?.firmware ?? null,
+        batteryLevel,
+      },
+    };
+    this.emit("event", event);
   }
 }

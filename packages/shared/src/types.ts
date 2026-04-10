@@ -15,6 +15,7 @@ export interface DeviceInfo {
   lastSeenAt: string | null;
   hardwareModel: string | null;
   firmwareVersion: string | null;
+  batteryLevel: number | null;  // 0–100, null if unknown or plugged in without reporting
 }
 
 export interface NodeInfo {

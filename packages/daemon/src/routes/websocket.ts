@@ -75,6 +75,7 @@ export async function registerWsRoute(
             lastSeenAt: live?.connectedAt ?? d.last_seen ?? null,
             hardwareModel: d.hw_model ?? null,
             firmwareVersion: d.firmware ?? null,
+            batteryLevel: deviceManager.getBatteryLevel(d.id),
           };
         }),
       };
