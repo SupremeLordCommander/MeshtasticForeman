@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { DeviceManager } from "../device/device-manager.js";
 import type { MqttGateway } from "../mqtt/gateway.js";
 import type { PGlite } from "@electric-sql/pglite";
+import { getHwModels } from "../hw-models.js";
 
 const connectBodySchema = z.object({
   port: z.string().min(1),
@@ -100,6 +101,15 @@ export async function registerDeviceRoutes(
       [nodeId, aliasName, latitude, longitude, altitude, notes]
     );
     return { nodeId, aliasName, latitude, longitude, altitude, notes };
+  });
+
+  // ---------------------------------------------------------------------------
+  // Hardware model lookup table (populated from protobufs repo by syncHwModels)
+  // ---------------------------------------------------------------------------
+
+  app.get("/api/hw-models", async (_req, reply) => {
+    if (!db) return reply.status(503).send({ error: "DB not available" });
+    return getHwModels(db);
   });
 
   app.delete("/api/node-overrides/:nodeId", async (req, reply) => {
