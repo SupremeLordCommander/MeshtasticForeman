@@ -320,6 +320,20 @@ async function handleClientCommand(
       break;
     }
 
+    case "device:set-config": {
+      const { deviceId, namespace, section, value } = command.payload;
+      try {
+        await deviceManager.applyConfigSection(deviceId, namespace, section, value as Record<string, unknown>);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        socket.send(JSON.stringify({
+          type: "error",
+          payload: { code: "SET_CONFIG_FAILED", message: msg },
+        } satisfies ServerEvent));
+      }
+      break;
+    }
+
     case "mqtt:toggle": {
       const { enabled } = command.payload;
       if (!mqttGateway) {

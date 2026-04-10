@@ -13,20 +13,180 @@ const CHANNEL_ROLES: Record<number, string> = {
   2: "SECONDARY",
 };
 
+// ---------------------------------------------------------------------------
+// Templates — predefined config recipes
+// ---------------------------------------------------------------------------
+
+interface ConfigChange {
+  namespace: "radio" | "module";
+  section: string;
+  /** Fields to merge. Only listed keys are sent; existing keys not listed are preserved on device. */
+  value: Record<string, unknown>;
+}
+
+interface Template {
+  id: string;
+  label: string;
+  description: string;
+  /** Keys that will be highlighted in the config view */
+  highlights: Array<{ namespace: "radio" | "module"; section: string; key: string }>;
+  changes: ConfigChange[];
+}
+
+const TEMPLATES: Template[] = [
+  {
+    id: "mqtt-uplink-on",
+    label: "Enable MQTT uplink",
+    description: "Turn on MQTT, enable encryption, set proxy to client. Device will forward mesh traffic to the broker.",
+    highlights: [
+      { namespace: "module", section: "mqtt", key: "enabled" },
+      { namespace: "module", section: "mqtt", key: "encryptionEnabled" },
+      { namespace: "module", section: "mqtt", key: "proxyToClientEnabled" },
+    ],
+    changes: [
+      {
+        namespace: "module",
+        section: "mqtt",
+        value: { enabled: true, encryptionEnabled: true, proxyToClientEnabled: true },
+      },
+    ],
+  },
+  {
+    id: "mqtt-uplink-off",
+    label: "Disable MQTT uplink",
+    description: "Turn off MQTT. Device will stop forwarding mesh traffic to the broker.",
+    highlights: [
+      { namespace: "module", section: "mqtt", key: "enabled" },
+    ],
+    changes: [
+      {
+        namespace: "module",
+        section: "mqtt",
+        value: { enabled: false },
+      },
+    ],
+  },
+  {
+    id: "router-mode",
+    label: "Router mode",
+    description: "Set device role to ROUTER. The node will rebroadcast packets but not originate NodeInfo or position.",
+    highlights: [
+      { namespace: "radio", section: "device", key: "role" },
+    ],
+    changes: [
+      {
+        namespace: "radio",
+        section: "device",
+        value: { role: 2 },
+      },
+    ],
+  },
+  {
+    id: "client-mode",
+    label: "Client mode",
+    description: "Set device role to CLIENT (default). Normal user-facing device.",
+    highlights: [
+      { namespace: "radio", section: "device", key: "role" },
+    ],
+    changes: [
+      {
+        namespace: "radio",
+        section: "device",
+        value: { role: 0 },
+      },
+    ],
+  },
+  {
+    id: "store-forward-server",
+    label: "Store & Forward server",
+    description: "Enable Store & Forward as server with heartbeat. Useful for nodes with good connectivity.",
+    highlights: [
+      { namespace: "module", section: "storeForward", key: "enabled" },
+      { namespace: "module", section: "storeForward", key: "isServer" },
+      { namespace: "module", section: "storeForward", key: "heartbeat" },
+    ],
+    changes: [
+      {
+        namespace: "module",
+        section: "storeForward",
+        value: { enabled: true, isServer: true, heartbeat: true },
+      },
+    ],
+  },
+];
+
+// ---------------------------------------------------------------------------
+
 export function DeviceConfigPage({ devices, configs }: Props) {
   const connectedDevices = devices.filter((d) => d.status === "connected");
   const [selectedId, setSelectedId] = useState<string | null>(
     connectedDevices[0]?.id ?? null
   );
+  const [activeTemplate, setActiveTemplate] = useState<string | null>(null);
+  const [applying, setApplying] = useState(false);
+  const [lastApplied, setLastApplied] = useState<string | null>(null);
+  const [applyError, setApplyError] = useState<string | null>(null);
 
   const config = selectedId ? configs.get(selectedId) : null;
   const device = devices.find((d) => d.id === selectedId);
+
+  const highlightedKeys = activeTemplate
+    ? (TEMPLATES.find((t) => t.id === activeTemplate)?.highlights ?? [])
+    : [];
+
+  function isHighlighted(namespace: "radio" | "module", section: string, key: string) {
+    return highlightedKeys.some(
+      (h) => h.namespace === namespace && h.section === section && h.key === key
+    );
+  }
 
   // On mount (or when selected device changes), request a fresh config snapshot
   useEffect(() => {
     if (!selectedId) return;
     foremanClient.send({ type: "device:config-request", payload: { deviceId: selectedId } });
   }, [selectedId]);
+
+  function applyTemplate(template: Template) {
+    if (!selectedId || applying) return;
+    setApplying(true);
+    setApplyError(null);
+
+    for (const change of template.changes) {
+      foremanClient.send({
+        type: "device:set-config",
+        payload: {
+          deviceId: selectedId,
+          namespace: change.namespace,
+          section: change.section,
+          value: change.value,
+        },
+      });
+    }
+
+    // Wait for device:config (success) or error event from the daemon
+    const deviceId = selectedId;
+    const timeout = setTimeout(() => {
+      off();
+      setApplying(false);
+      setApplyError("Timed out — no response from device.");
+    }, 10_000);
+
+    const off = foremanClient.on((event) => {
+      if (event.type === "device:config" && event.payload.deviceId === deviceId) {
+        clearTimeout(timeout);
+        off();
+        setApplying(false);
+        setLastApplied(template.id);
+        setTimeout(() => setLastApplied(null), 3000);
+      }
+      if (event.type === "error" && event.payload.code === "SET_CONFIG_FAILED") {
+        clearTimeout(timeout);
+        off();
+        setApplying(false);
+        setApplyError(event.payload.message);
+      }
+    });
+  }
 
   return (
     <div style={styles.page}>
@@ -54,6 +214,42 @@ export function DeviceConfigPage({ devices, configs }: Props) {
         </div>
       ) : (
         <div style={styles.body}>
+
+          {/* Templates */}
+          <Section title="Templates">
+            <div style={styles.templateGrid}>
+              {TEMPLATES.map((t) => (
+                <div
+                  key={t.id}
+                  style={templateCardStyle(activeTemplate === t.id)}
+                  onClick={() => setActiveTemplate((prev) => prev === t.id ? null : t.id)}
+                >
+                  <div style={styles.templateLabel}>{t.label}</div>
+                  <div style={styles.templateDesc}>{t.description}</div>
+                  {activeTemplate === t.id && (
+                    <button
+                      style={applyBtnStyle(applying)}
+                      disabled={applying}
+                      onClick={(e) => { e.stopPropagation(); applyTemplate(t); }}
+                    >
+                      {applying ? "Applying…" : lastApplied === t.id ? "Applied ✓" : "Apply to device"}
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+            {applyError && (
+              <div style={styles.applyError}>
+                <span style={{ color: "#f87171", fontWeight: "bold" }}>Error: </span>
+                {applyError}
+                <button
+                  style={styles.dismissBtn}
+                  onClick={() => setApplyError(null)}
+                >✕</button>
+              </div>
+            )}
+          </Section>
+
           {/* Channels */}
           <Section title="Channels">
             <ChannelTable channels={config.channels} />
@@ -63,7 +259,14 @@ export function DeviceConfigPage({ devices, configs }: Props) {
           {Object.keys(config.radioConfig).length > 0 && (
             <Section title="Radio Config">
               {Object.entries(config.radioConfig).map(([key, value]) => (
-                <ConfigCard key={key} title={key} data={value as Record<string, unknown>} />
+                <ConfigCard
+                  key={key}
+                  title={key}
+                  data={value as Record<string, unknown>}
+                  highlightKeys={highlightedKeys
+                    .filter((h) => h.namespace === "radio" && h.section === key)
+                    .map((h) => h.key)}
+                />
               ))}
             </Section>
           )}
@@ -72,7 +275,14 @@ export function DeviceConfigPage({ devices, configs }: Props) {
           {Object.keys(config.moduleConfig).length > 0 && (
             <Section title="Module Config">
               {Object.entries(config.moduleConfig).map(([key, value]) => (
-                <ConfigCard key={key} title={key} data={value as Record<string, unknown>} />
+                <ConfigCard
+                  key={key}
+                  title={key}
+                  data={value as Record<string, unknown>}
+                  highlightKeys={highlightedKeys
+                    .filter((h) => h.namespace === "module" && h.section === key)
+                    .map((h) => h.key)}
+                />
               ))}
             </Section>
           )}
@@ -91,24 +301,40 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-function ConfigCard({ title, data }: { title: string; data: Record<string, unknown> }) {
-  const [open, setOpen] = useState(false);
+function ConfigCard({
+  title,
+  data,
+  highlightKeys = [],
+}: {
+  title: string;
+  data: Record<string, unknown>;
+  highlightKeys?: string[];
+}) {
+  const hasHighlight = highlightKeys.length > 0;
+  const [open, setOpen] = useState(hasHighlight);
   const entries = Object.entries(data).filter(([k]) => k !== "$typeName");
 
   return (
-    <div style={styles.card}>
+    <div style={{ ...styles.card, borderColor: hasHighlight ? "#3b82f6" : "#1e293b" }}>
       <button style={styles.cardHeader} onClick={() => setOpen((v) => !v)}>
-        <span style={styles.cardTitle}>{title}</span>
+        <span style={{ ...styles.cardTitle, color: hasHighlight ? "#60a5fa" : "#94a3b8" }}>
+          {title}
+        </span>
         <span style={{ color: "#475569", fontSize: "0.65rem" }}>{open ? "▲" : "▼"}</span>
       </button>
       {open && (
         <div style={styles.cardBody}>
-          {entries.map(([k, v]) => (
-            <div key={k} style={styles.row}>
-              <span style={styles.rowKey}>{camelToLabel(k)}</span>
-              <span style={styles.rowVal}>{formatValue(v)}</span>
-            </div>
-          ))}
+          {entries.map(([k, v]) => {
+            const highlighted = highlightKeys.includes(k);
+            return (
+              <div key={k} style={{ ...styles.row, background: highlighted ? "#172036" : undefined }}>
+                <span style={{ ...styles.rowKey, color: highlighted ? "#60a5fa" : "#475569" }}>
+                  {camelToLabel(k)}
+                </span>
+                <span style={styles.rowVal}>{formatValue(v)}</span>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
@@ -178,6 +404,34 @@ function deviceBtnStyle(active: boolean, connected: boolean): React.CSSPropertie
   };
 }
 
+function templateCardStyle(active: boolean): React.CSSProperties {
+  return {
+    background: active ? "#0f2a4a" : "#0f172a",
+    border: `1px solid ${active ? "#3b82f6" : "#1e293b"}`,
+    borderRadius: "0.375rem",
+    padding: "0.75rem",
+    cursor: "pointer",
+    display: "flex",
+    flexDirection: "column",
+    gap: "0.35rem",
+  };
+}
+
+function applyBtnStyle(disabled: boolean): React.CSSProperties {
+  return {
+    marginTop: "0.35rem",
+    alignSelf: "flex-start",
+    background: disabled ? "#1e293b" : "#1d4ed8",
+    border: "none",
+    color: disabled ? "#64748b" : "#fff",
+    padding: "0.3rem 0.8rem",
+    borderRadius: "0.25rem",
+    cursor: disabled ? "not-allowed" : "pointer",
+    fontFamily: "monospace",
+    fontSize: "0.78rem",
+  };
+}
+
 const styles: Record<string, React.CSSProperties> = {
   page: {
     padding: "1.25rem",
@@ -217,6 +471,44 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: "column",
     gap: "0.4rem",
   },
+  templateGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
+    gap: "0.5rem",
+  },
+  templateLabel: {
+    color: "#e2e8f0",
+    fontSize: "0.82rem",
+    fontWeight: "bold",
+  },
+  applyError: {
+    display: "flex",
+    alignItems: "center",
+    gap: "0.5rem",
+    background: "#2d0f0f",
+    border: "1px solid #7f1d1d",
+    borderRadius: "0.375rem",
+    padding: "0.45rem 0.75rem",
+    fontSize: "0.78rem",
+    color: "#fca5a5",
+    fontFamily: "monospace",
+  },
+  dismissBtn: {
+    marginLeft: "auto",
+    background: "none",
+    border: "none",
+    color: "#64748b",
+    cursor: "pointer",
+    fontSize: "0.75rem",
+    padding: "0 0.2rem",
+    lineHeight: 1,
+    flexShrink: 0,
+  },
+  templateDesc: {
+    color: "#64748b",
+    fontSize: "0.74rem",
+    lineHeight: "1.4",
+  },
   card: {
     border: "1px solid #1e293b",
     borderRadius: "0.375rem",
@@ -250,6 +542,8 @@ const styles: Record<string, React.CSSProperties> = {
     gap: "0.75rem",
     fontSize: "0.78rem",
     lineHeight: "1.4",
+    padding: "0.1rem 0.2rem",
+    borderRadius: "0.2rem",
   },
   rowKey: {
     color: "#475569",

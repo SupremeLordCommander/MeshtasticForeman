@@ -820,6 +820,51 @@ export class DeviceManager extends EventEmitter {
     };
   }
 
+  /**
+   * Write a single config section to the device, persist to DB, re-emit snapshot.
+   * namespace: "radio" → meshDevice.setConfig(); "module" → meshDevice.setModuleConfig()
+   */
+  async applyConfigSection(
+    deviceId: string,
+    namespace: "radio" | "module",
+    section: string,
+    value: Record<string, unknown>,
+  ): Promise<void> {
+    const device = this.devices.get(deviceId);
+    if (!device) throw new Error(`Device ${deviceId} not connected`);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { create } = await import("@bufbuild/protobuf") as any;
+
+    if (namespace === "radio") {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const ConfigSchema = (Protobuf.Config as any).ConfigSchema;
+      const proto = create(ConfigSchema, {
+        payloadVariant: { case: section, value },
+      });
+      await device.meshDevice.setConfig(proto);
+    } else {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const ModuleConfigSchema = (Protobuf.ModuleConfig as any).ModuleConfigSchema;
+      const proto = create(ModuleConfigSchema, {
+        payloadVariant: { case: section, value },
+      });
+      await device.meshDevice.setModuleConfig(proto);
+    }
+
+    await device.meshDevice.commitEditSettings();
+
+    // Persist the change to DB
+    const col = namespace === "radio" ? "radio_config" : "module_config";
+    await this.db.query(
+      `UPDATE devices SET ${col} = jsonb_set(COALESCE(${col}, '{}'), ARRAY[$1], $2::jsonb) WHERE id = $3`,
+      [section, JSON.stringify(value), deviceId],
+    );
+
+    console.log(`[devices] applied ${namespace} config section=${section} device=${deviceId}`);
+    await this._emitDeviceConfig(deviceId);
+  }
+
   private async _emitDeviceConfig(deviceId: string) {
     const config = await this.getDeviceConfig(deviceId);
     if (!config) return;

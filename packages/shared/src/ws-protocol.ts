@@ -119,6 +119,19 @@ export const requestDeviceConfigSchema = z.object({
   payload: z.object({ deviceId: z.string().uuid() }),
 });
 
+export const setDeviceConfigSchema = z.object({
+  type: z.literal("device:set-config"),
+  payload: z.object({
+    deviceId: z.string().uuid(),
+    /** "radio" | "module" */
+    namespace: z.enum(["radio", "module"]),
+    /** section key, e.g. "mqtt", "lora", "device" */
+    section: z.string().min(1),
+    /** plain-object fields to merge into the section */
+    value: z.record(z.unknown()),
+  }),
+});
+
 export const clientCommandSchema = z.discriminatedUnion("type", [
   sendMessageSchema,
   subscribePacketsSchema,
@@ -130,6 +143,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   removeNodeSchema,
   mqttToggleSchema,
   requestDeviceConfigSchema,
+  setDeviceConfigSchema,
 ]);
 
 export type ClientCommand = z.infer<typeof clientCommandSchema>;
