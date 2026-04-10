@@ -167,6 +167,28 @@ const migrations: string[] = [
     fetched_at TIMESTAMPTZ NOT NULL DEFAULT now()
   );
   `,
+
+  /* 009 – message role tracking: distinguish received, sent, and relayed messages.
+            text is made nullable to support encrypted relay packets where we cannot
+            decode the payload.  An index on role speeds up per-direction queries. */
+  `
+  ALTER TABLE messages ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'received';
+  ALTER TABLE messages ALTER COLUMN text DROP NOT NULL;
+  CREATE INDEX IF NOT EXISTS messages_role ON messages(device_id, role, rx_time DESC);
+  `,
+
+  /* 010 – ACK tracking for sent messages.
+            ack_status is only populated for role='sent' messages where wantAck=true:
+              'pending' = sent, waiting for delivery confirmation
+              'acked'   = recipient confirmed receipt
+              'error'   = NACK received (see ack_error for reason, e.g. "NO_ROUTE")
+            ack_at is when the ACK/NACK arrived; ack_error holds the Routing_Error name. */
+  `
+  ALTER TABLE messages ADD COLUMN IF NOT EXISTS ack_status TEXT;
+  ALTER TABLE messages ADD COLUMN IF NOT EXISTS ack_at    TIMESTAMPTZ;
+  ALTER TABLE messages ADD COLUMN IF NOT EXISTS ack_error TEXT;
+  CREATE INDEX IF NOT EXISTS messages_ack ON messages(device_id, ack_status) WHERE ack_status = 'pending';
+  `,
 ];
 
 export async function runMigrations(db: PGlite) {

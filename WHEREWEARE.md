@@ -2,14 +2,7 @@
 
 ## Why This Project Exists
 
-This is a ground-up replacement for the official `meshtastic_web` client (Patrick's fork lives at `D:\Projects\GitHub\meshtastic_web`). The original project has fundamental architectural problems:
-
-- **All connection logic runs in the browser** — Web Serial/Bluetooth APIs were never designed for daemon-like continuous operation. Connections die when the tab closes, the browser throttles background tabs, and there is no clean way to add packet logging without breaking the stream.
-- **Industrial use case requires 24/7 uptime** — devices may send/receive data for days. A browser tab is not an acceptable runtime for this.
-- **Security bypass extensions** — the HTTP transport requires CORS-bypass browser extensions because Meshtastic devices don't serve proper CORS headers. This is a red flag, not a workaround.
-- **Packet logging is broken by design** — because the serial stream goes through the browser, there is no place to tap it without competing for the stream.
-
-The correct architecture: a **Node.js daemon** owns all device connections and runs indefinitely. The **browser frontend** is a pure UI that connects to the daemon via WebSocket. Page reload, tab close, browser crash — none of it affects the device connection.
+A ground-up replacement for the official `meshtastic_web` client. The original runs all connection logic in the browser — connections die on tab close, background throttling kills it, no place to tap packets without competing for the serial stream. The correct architecture: a **Node.js daemon** owns all device connections and runs indefinitely. The browser frontend is a pure UI over WebSocket.
 
 ---
 
@@ -43,110 +36,230 @@ In dev: Vite (port 5173) proxies `/api` and `/ws` to daemon on port 3750.
 ```
 MeshtasticForeman/
 ├── packages/
-│   ├── daemon/                  # Node.js process
-│   │   └── src/
-│   │       ├── index.ts         # Fastify server entry point, port 3750
-│   │       ├── db/
-│   │       │   ├── client.ts    # PGlite singleton (data dir: ./pglite-data)
-│   │       │   └── migrations.ts # Schema + migration runner
-│   │       ├── device/
-│   │       │   └── device-manager.ts  # Owns connections, emits ServerEvents
-│   │       └── routes/
-│   │           ├── devices.ts   # REST: GET /api/devices, POST /api/devices/connect, DELETE /api/devices/:id
-│   │           └── websocket.ts # WS /ws — broadcasts events, handles ClientCommands
-│   ├── shared/                  # Protocol contract used by both daemon and web
-│   │   └── src/
-│   │       ├── types.ts         # Domain types: DeviceInfo, NodeInfo, Message, Packet, Channel, Waypoint
-│   │       ├── ws-protocol.ts   # ServerEvent union type + ClientCommand Zod schemas
-│   │       └── index.ts         # Re-exports
-│   └── web/                     # React 19 + Vite frontend
-│       └── src/
-│           ├── ws/client.ts     # ForemanClient — auto-reconnecting WebSocket singleton
-│           ├── App.tsx          # Skeleton UI (device list wired to WS events)
-│           └── main.tsx         # React entry point
-├── package.json                 # pnpm workspace root, onlyBuiltDependencies configured
-├── pnpm-workspace.yaml
-├── .npmrc
-└── .gitignore
+│   ├── daemon/src/
+│   │   ├── index.ts                  # Fastify entry point, port 3750
+│   │   ├── db/
+│   │   │   ├── client.ts             # PGlite singleton (./pglite-data, override with PGLITE_DIR)
+│   │   │   └── migrations.ts         # All schema migrations (currently 010)
+│   │   ├── device/
+│   │   │   └── device-manager.ts     # Owns connections, handles all packet events
+│   │   ├── mqtt/
+│   │   │   └── gateway.ts            # MQTT uplink via regional broker
+│   │   └── routes/
+│   │       ├── devices.ts            # REST: GET/POST/DELETE /api/devices
+│   │       └── websocket.ts          # WS /ws
+│   ├── shared/src/
+│   │   ├── types.ts                  # Domain types
+│   │   ├── ws-protocol.ts            # ServerEvent union + ClientCommand Zod schemas
+│   │   └── index.ts
+│   └── web/src/
+│       ├── ws/client.ts              # ForemanClient — auto-reconnecting WS singleton
+│       ├── App.tsx                   # Tab navigation shell
+│       └── pages/
+│           ├── NodesPage.tsx
+│           ├── NodeDetailPanel.tsx   # Per-node side panel with mini chat UI
+│           ├── MapPage.tsx
+│           ├── ActivityPage.tsx
+│           ├── LogsPage.tsx
+│           ├── DeviceConfigPage.tsx
+│           └── NodeOverridesPage.tsx
+├── Samples/
+│   └── proxy.py                      # MQTT uplink for WiFi-less devices (nRF52840)
+└── start-both.ps1                    # Launches daemon + web in one terminal
 ```
 
 ---
 
-## Key Technical Decisions
+## Running the Project
 
-| Decision | Choice | Why |
+```bash
+pnpm install
+pnpm dev           # daemon (3750) + web (5173) in parallel
+```
+
+Or use `start-both.ps1` from the repo root.
+
+---
+
+## Database Schema — Current (migration 010)
+
+| Table | Purpose |
+|---|---|
+| `devices` | Connected serial devices. Columns: `id`, `name`, `port`, `hw_model`, `firmware`, `radio_config` (JSONB), `module_config` (JSONB), `created_at`, `last_seen` |
+| `nodes` | Mesh nodes heard by each device. PK `(node_id, device_id)`. Includes position, SNR, hops_away |
+| `messages` | All text messages — received, sent by us, and relayed (see below) |
+| `packets` | Every raw mesh packet (all portnums), for the activity/debug view |
+| `channels` | Channel config per device (name, role, PSK) |
+| `waypoints` | Waypoints broadcast on the mesh |
+| `mqtt_nodes` | Nodes seen via MQTT regional subscription (separate from local mesh nodes) |
+| `node_overrides` | Local display-only name/position overrides for nodes that never broadcast their own |
+| `hw_models` | Hardware model number → canonical name, synced from Meshtastic protobufs repo |
+| `schema_migrations` | Migration version tracker |
+
+### `messages` table columns
+
+```sql
+id            TEXT PRIMARY KEY        -- UUID
+packet_id     BIGINT NOT NULL         -- Meshtastic packet ID (used for ACK matching)
+device_id     TEXT NOT NULL           -- FK → devices(id) ON DELETE CASCADE
+from_node_id  BIGINT NOT NULL
+to_node_id    BIGINT NOT NULL
+channel_index INT NOT NULL DEFAULT 0
+text          TEXT                    -- nullable: NULL for encrypted relayed packets
+rx_time       TIMESTAMPTZ NOT NULL    -- receive time (or send time for role='sent')
+rx_snr        REAL
+rx_rssi       INT
+hop_limit     INT
+want_ack      BOOLEAN NOT NULL DEFAULT false
+via_mqtt      BOOLEAN NOT NULL DEFAULT false
+role          TEXT NOT NULL DEFAULT 'received'   -- 'received' | 'sent' | 'relayed'
+ack_status    TEXT                    -- 'pending' | 'acked' | 'error' | NULL
+ack_at        TIMESTAMPTZ             -- when ACK/NACK arrived
+ack_error     TEXT                    -- Routing_Error name on NACK (e.g. 'NO_ROUTE')
+```
+
+**Role semantics:**
+- `received` — came off the radio, decoded, addressed to us or broadcast
+- `sent` — we originated it via `message:send`; `ack_status='pending'` if `wantAck=true`, NULL if not
+- `relayed` — encrypted DM for another node that passed through us; `text` is NULL
+
+**ACK flow:** ROUTING_APP (portnum 5) packets are decoded in `_handleRawPacket`. `requestId` on the inner Data proto links back to the sent message's `packet_id`. On ACK → `ack_status='acked'`. On NACK → `ack_status='error'`, `ack_error='NO_ROUTE'` etc.
+
+---
+
+## WebSocket Protocol (current)
+
+**Server → Client** (`ServerEvent` in `shared/src/ws-protocol.ts`):
+
+| Event | Payload | When |
 |---|---|---|
-| Backend framework | Fastify | Lightweight, TypeScript-native, excellent WebSocket plugin |
-| Database | PGlite (embedded Postgres) | Full SQL semantics, no separate server process, single-writer fits single-daemon model |
-| Frontend | React 19 + Vite | Familiar, fast, no SSR needed — this is a tool UI not a website |
-| No Next.js | Deliberate | Next.js is built around stateless request/response — it fights you when you need persistent device connections |
-| Meshtastic packages | `@meshtastic/core@2.6.7`, `@meshtastic/transport-node-serial@0.0.2` | Official packages published to npm, reuse protobuf handling |
+| `device:list` | `DeviceInfo[]` | On connect (snapshot) |
+| `device:status` | `DeviceInfo` | Device connect/disconnect |
+| `node:update` / `node:list` | `NodeInfo` / `NodeInfo[]` | Node heard or on connect |
+| `message:received` | `Message` | Incoming text message |
+| `message:sent` | `Message` | Outbound message confirmed sent (real packetId) |
+| `message:history` | `Message[]` | Response to `messages:request-history` |
+| `message:ack` | `{ messageId, packetId, status, ackAt, ackError }` | Delivery ACK or NACK |
+| `packet:raw` | `Packet` | Raw decoded packet (subscribers only) |
+| `channel:list` | `Channel[]` | On connect or config change |
+| `waypoint:update` / `waypoint:list` | `Waypoint` / `Waypoint[]` | Waypoint events |
+| `mqtt_node:update` / `mqtt_node:list` | `MqttNode` / `MqttNode[]` | MQTT-sourced nodes |
+| `traceroute:result` | `{ nodeId, route, routeBack }` | Traceroute response |
+| `activity:entry` / `activity:snapshot` | `ActivityEntry` / `ActivityEntry[]` | Packet activity log |
+| `log:entry` / `log:snapshot` | `LogEntry` / `LogEntry[]` | Console log stream |
+| `device:config` | `DeviceConfig` | Radio + module config |
+| `error` | `{ code, message }` | Command errors |
+
+**Client → Server** (Zod-validated `ClientCommand`):
+
+| Command | Required payload |
+|---|---|
+| `message:send` | `deviceId`, `text`, `toNodeId`, `channelIndex`, `wantAck` |
+| `messages:request-history` | `deviceId`, optional `channelIndex`, `toNodeId`, `limit`, `before` |
+| `packets:subscribe` | `deviceId`, `enabled` |
+| `nodes:request-list` | `deviceId` |
+| `traceroute:send` | `deviceId`, `nodeId` |
+| `waypoints:request-list` | `deviceId` |
+| `channels:request-list` | `deviceId` |
+| `node:remove` | `deviceId`, `nodeId` |
+| `device:request-config` | `deviceId` |
+| `device:set-config` | `deviceId`, `section`, `config` |
 
 ---
 
-## PGlite Schema (migration 001)
+## Key Types (`shared/src/types.ts`)
 
-Tables: `devices`, `nodes`, `messages`, `packets`, `channels`, `waypoints`, `schema_migrations`
+```typescript
+export type MessageRole = "received" | "sent" | "relayed";
+export type AckStatus = "pending" | "acked" | "error";
 
-All tables except `devices` have `device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE` — data is fully partitioned by device. Multiple devices never bleed into each other.
-
-PGlite data directory: `./pglite-data` (relative to repo root, gitignored). Override with `PGLITE_DIR` env var.
+export interface Message {
+  id: string;
+  packetId: number;
+  fromNodeId: number;
+  toNodeId: number;
+  channelIndex: number;
+  text: string | null;       // null for encrypted relayed packets
+  rxTime: string;
+  rxSnr: number | null;
+  rxRssi: number | null;
+  hopLimit: number | null;
+  wantAck: boolean;
+  viaMqtt: boolean;
+  role: MessageRole;
+  ackStatus: AckStatus | null;  // null = no ACK requested or non-sent message
+  ackAt: string | null;
+  ackError: string | null;
+}
+```
 
 ---
 
-## WebSocket Protocol
+## Messaging System — What Was Built (this session)
 
-**Server → Client** (`ServerEvent` union in `shared/src/ws-protocol.ts`):
-- `device:list` — full device snapshot sent on connect
-- `device:status` — single device status update
-- `node:update` / `node:list`
-- `message:received` / `message:history`
-- `packet:raw` — raw decoded packet (only sent if client subscribed)
-- `channel:list`, `waypoint:update`, `waypoint:list`
-- `error` — `{ code: string, message: string }`
+We built the full message storage and delivery tracking pipeline:
 
-**Client → Server** (`ClientCommand` discriminated union, validated with Zod):
-- `message:send` — requires `deviceId`, `text`, `toNodeId`, `channelIndex`, `wantAck`
-- `packets:subscribe` — requires `deviceId`, `enabled`
-- `messages:request-history` — requires `deviceId`, optional `channelIndex`, `toNodeId`, `limit`, `before`
+1. **Migration 009** — `role` column on messages, `text` made nullable, role index
+2. **Migration 010** — `ack_status`, `ack_at`, `ack_error` columns, partial index on pending
+3. **Sent message storage** — `message:send` handler captures `packetId` returned by `sendText()`, looks up our node ID via `getMyNodeId()`, inserts as `role='sent'` with `ack_status='pending'` (or NULL if `wantAck=false`), broadcasts `message:sent` event
+4. **Relay storage** — `_handleRawPacket` detects encrypted TEXT_MESSAGE_APP packets going to other specific nodes (not us, not broadcast) and stores them as `role='relayed'` with `text=NULL`
+5. **ACK tracking** — `_handleRawPacket` detects ROUTING_APP (portnum 5) packets, decodes with `fromBinary(Protobuf.Mesh.RoutingSchema, ...)`, extracts `requestId`, updates the matching sent message, emits `message:ack`
 
-**All client commands require `deviceId: z.string().uuid()`** — this was added deliberately so multi-device routing is explicit at the protocol level from day one. The WS handler validates the device exists and returns `DEVICE_NOT_FOUND` before touching any device logic.
+---
+
+## Messaging UI — Next Step (STOP HERE, resume on other computer)
+
+This is the next thing to build. Three parts, in order:
+
+### Part 1 — Fix NodeDetailPanel (bugs with new events)
+
+`NodeDetailPanel.tsx` at `packages/web/src/pages/NodeDetailPanel.tsx` has a mini chat UI that already handles `message:received` and `message:history` but ignores the two new events:
+
+1. **`message:sent` not handled** — when daemon confirms the send (with real `packetId`), the UI ignores it. The optimistic message (`id: local-${Date.now()}`, `packetId: 0`) never gets replaced. Fix: on `message:sent` event, replace the matching optimistic entry with the real message. Match on `toNodeId` equality and `rxTime` proximity (within a few seconds).
+
+2. **`message:ack` not handled** — `ackStatus` on displayed messages never changes from `'pending'`. Fix: on `message:ack`, find the message by `event.payload.messageId` in state and update `ackStatus`, `ackAt`, `ackError`.
+
+3. **Add ACK status indicator** — sent message bubbles should show: clock icon = `'pending'`, checkmark = `'acked'`, X with tooltip = `'error'` (tooltip text = `ackError` value, e.g. `NO_ROUTE`).
+
+### Part 2 — New "Messages" tab
+
+Add a `"messages"` tab to `App.tsx` (alongside nodes, map, activity, logs, overrides, config).
+
+Two-panel layout:
+
+**Left panel — conversation list**
+- One row per node you've exchanged messages with (query history grouped by `from_node_id`/`to_node_id`)
+- Shows: node short name, last message preview (truncated), timestamp, unread badge
+- Sorted by most recent message time
+- On click: loads that node's thread in the right panel
+
+**Right panel — thread view**
+- Full message thread for selected node
+- Sent messages right-aligned, received left-aligned (standard chat layout)
+- `role='relayed'` shown dimmed with a small "relayed" label
+- ACK status indicators on sent messages (same as Part 1)
+- Channel selector + compose bar at bottom (same as NodeDetailPanel's compose)
+- On mount: sends `messages:request-history` with `toNodeId = selectedNodeId`
+- Appends real-time via `message:received`, `message:sent`; updates via `message:ack`
+
+### Part 3 — Message store (shared state)
+
+Right now `foremanClient.on()` fans raw events to every component. For the Messages tab to stay in sync while not active, and to avoid requesting history every time you switch tabs, create a lightweight module-level store:
+
+- Location: `packages/web/src/store/messages.ts`
+- Data structure: `Map<nodeId, Message[]>` keyed by the "other node" in the conversation
+- Subscribes to `message:received`, `message:sent`, `message:ack` once at startup
+- Exposes a React hook: `useConversation(nodeId)` → `Message[]`
+- Exposes `useConversationList()` → sorted list of `{ nodeId, lastMessage, unreadCount }`
+- The Messages tab and NodeDetailPanel both read from this store instead of managing their own local state
 
 ---
 
 ## MQTT Gateway — Status: WORKING
 
-The device is a **SEEED_WIO_TRACKER_L1** (nRF52840-based). nRF52840 has no WiFi, so the device's built-in MQTT module cannot connect to the internet independently. The Python proxy in `Samples/proxy.py` is the correct and permanent architecture for this hardware — not a workaround.
+The device is a **SEEED_WIO_TRACKER_L1** (nRF52840, no WiFi). `Samples/proxy.py` connects via serial and publishes properly-encrypted `ServiceEnvelope` protobufs to the regional MQTT broker. Local device (`!9ee3d61e`) appears on `meshtastic.org/map`.
 
-### What proxy.py does
-
-- Connects to the device via serial using the meshtastic Python library
-- Receives all mesh packets the device hears (its own + relayed from other nodes)
-- Re-serializes the decoded protobuf payload, re-encrypts using the channel PSK, and publishes a proper `ServiceEnvelope` protobuf to the correct MQTT topic
-- Proactively announces the local node (NODEINFO + POSITION + MAP_REPORT) on startup and every 15 minutes
-
-### Topic structure
-
-| Topic | Format | Content |
-|---|---|---|
-| `{root}/2/e/LongFast/{!gatewayId}` | ServiceEnvelope (encrypted) | All mesh traffic (POSITION, NODEINFO, TEXT, TELEMETRY, ROUTING) |
-| `{root}/2/map/` | ServiceEnvelope (unencrypted) | MAP_REPORT_APP — public node metadata for the map |
-
-### Key implementation details
-
-- **Encryption**: AES-128-CTR. Key = channel PSK read from device on startup (default LongFast = `1PG7OiApB1nwvP+rz05pAQ==`). Nonce = `packetId(8B LE) + fromNode(8B LE)`.
-- **Map reports** (`2/map/`): unencrypted MeshPacket (`decoded` variant, not `encrypted`). The map server reads these without needing the channel key.
-- **Gateway ID**: local device's node ID (`!{nodeNum:08x}`) goes in the topic and `ServiceEnvelope.gateway_id`. Individual packet senders are identified by the `from` field inside the MeshPacket.
-- **Re-publishing loop prevention**: packets with `viaMqtt=True` are skipped.
-
-### Confirmed working
-
-- Local device (`!9ee3d61e`) appears on `meshtastic.org/map`
-- Other nodes heard via radio also appear on the map with relay path shown through `!9ee3d61e`
-
-### Configuration
-
-`Samples/.env` (copy from `Samples/.env.example`):
+`Samples/.env` (copy from `.env.example`):
 ```
 MESHTASTIC_PORT=COM7
 MQTT_BROKER=mqtt.meshtastic.org
@@ -155,43 +268,3 @@ MQTT_USER=meshdev
 MQTT_PASS=large4cats
 MQTT_ROOT=msh/US/CA/Humboldt/Eureka
 ```
-
-Dependencies: `pip install -r Samples/requirements.txt`
-
----
-
-## What Is NOT Wired Up Yet (next work)
-
-The `DeviceManager` has the multi-device Map and DB persistence in place, but the actual `MeshDevice` + `SerialConnection` instantiation is stubbed with TODO comments. This is the next piece to build:
-
-1. **`device-manager.ts` `connect()` method** — instantiate `SerialConnection` from `@meshtastic/transport-node-serial`, attach `MeshDevice` from `@meshtastic/core`, subscribe to packet events
-2. **`handlePacket()` method** — decode portnum, write to `packets` table, emit `packet:raw` event; if `portnum === TEXT_MESSAGE_APP`, also write to `messages` table and emit `message:received`
-3. **`websocket.ts` `message:send` handler** — call `device.meshDevice.sendText()` once MeshDevice is wired
-4. **`messages:request-history` handler** — query `messages` table with filters and stream results back
-5. **Auto-reconnect on serial disconnect** — detect disconnect event from transport, wait, retry `connect()`
-
----
-
-## Running the Project
-
-```bash
-# Install dependencies
-pnpm install
-
-# Dev mode (run daemon and web in parallel)
-pnpm dev
-
-# Daemon only
-pnpm --filter @foreman/daemon dev
-
-# Web only
-pnpm --filter @foreman/web dev
-```
-
-Daemon runs on port 3750. Web dev server on port 5173.
-
----
-
-## Context on Patrick (user)
-
-Building this for an **industrial Meshtastic deployment** — devices running 24/7, potentially days between human interaction. The old browser-based architecture was fundamentally unsuitable. He identified the architectural problems independently and the reasoning is sound. He understands the tradeoffs well.

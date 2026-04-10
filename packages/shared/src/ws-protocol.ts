@@ -22,7 +22,9 @@ export type ServerEvent =
   | { type: "node:update"; payload: NodeInfo }
   | { type: "node:list"; payload: NodeInfo[] }
   | { type: "message:received"; payload: Message }
+  | { type: "message:sent"; payload: Message }
   | { type: "message:history"; payload: Message[] }
+  | { type: "message:ack"; payload: { messageId: string; packetId: number; status: "acked" | "error"; ackAt: string; ackError: string | null } }
   | { type: "packet:raw"; payload: Packet }
   | { type: "channel:list"; payload: Channel[] }
   | { type: "waypoint:update"; payload: Waypoint }

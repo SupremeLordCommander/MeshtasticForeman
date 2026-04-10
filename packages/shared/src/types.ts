@@ -33,19 +33,26 @@ export interface NodeInfo {
   altitude: number | null;
 }
 
+export type MessageRole = "received" | "sent" | "relayed";
+export type AckStatus = "pending" | "acked" | "error";
+
 export interface Message {
   id: string;
   packetId: number;
   fromNodeId: number;
   toNodeId: number;
   channelIndex: number;
-  text: string;
+  text: string | null; // null for encrypted relayed packets we cannot decode
   rxTime: string;
   rxSnr: number | null;
   rxRssi: number | null;
   hopLimit: number | null;
   wantAck: boolean;
   viaMqtt: boolean;
+  role: MessageRole;
+  ackStatus: AckStatus | null; // null = no ACK requested (wantAck false) or non-sent message
+  ackAt: string | null;
+  ackError: string | null;
 }
 
 export interface Packet {

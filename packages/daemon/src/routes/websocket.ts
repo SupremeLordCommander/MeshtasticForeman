@@ -1,6 +1,7 @@
+import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type { WebSocket, RawData } from "ws";
-import type { ServerEvent, ClientCommand, MqttNode, ActivityEntry, LogEntry } from "@foreman/shared";
+import type { ServerEvent, ClientCommand, Message, MqttNode, ActivityEntry, LogEntry } from "@foreman/shared";
 import { clientCommandSchema } from "@foreman/shared";
 import { Types } from "@meshtastic/core";
 import type { DeviceManager } from "../device/device-manager.js";
@@ -165,21 +166,52 @@ async function handleClientCommand(
 ) {
   switch (command.type) {
     case "message:send": {
-      const device = deviceManager.getDevice(command.payload.deviceId);
+      const { deviceId, text, toNodeId, channelIndex, wantAck } = command.payload;
+      const device = deviceManager.getDevice(deviceId);
       if (!device) {
         socket.send(JSON.stringify({
           type: "error",
-          payload: { code: "DEVICE_NOT_FOUND", message: `No device with id ${command.payload.deviceId}` },
+          payload: { code: "DEVICE_NOT_FOUND", message: `No device with id ${deviceId}` },
         }));
         return;
       }
-      const { text, toNodeId, channelIndex, wantAck } = command.payload;
-      await device.meshDevice.sendText(
+      const packetId = await device.meshDevice.sendText(
         text,
         toNodeId,
         wantAck,
         channelIndex as Types.ChannelNumber
       );
+      const txTime = new Date().toISOString();
+      const msgId = randomUUID();
+      const myNodeId = deviceManager.getMyNodeId(deviceId) ?? 0;
+      const ackStatus = wantAck ? "pending" : null;
+      if (db) {
+        await db.query(
+          `INSERT INTO messages(id, packet_id, device_id, from_node_id, to_node_id, channel_index,
+             text, rx_time, want_ack, role, ack_status)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'sent', $10)`,
+          [msgId, packetId, deviceId, myNodeId, toNodeId, channelIndex, text, txTime, wantAck, ackStatus]
+        );
+      }
+      const sentMsg: Message = {
+        id: msgId,
+        packetId,
+        fromNodeId: myNodeId,
+        toNodeId,
+        channelIndex,
+        text,
+        rxTime: txTime,
+        rxSnr: null,
+        rxRssi: null,
+        hopLimit: null,
+        wantAck,
+        viaMqtt: false,
+        role: "sent",
+        ackStatus,
+        ackAt: null,
+        ackError: null,
+      };
+      if (broadcast) broadcast({ type: "message:sent", payload: sentMsg });
       console.log(`[ws] message:send → ${device.name} to node ${toNodeId}`);
       break;
     }
