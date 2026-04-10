@@ -86,6 +86,18 @@ function BatteryBar({ level }: { level: number }) {
   );
 }
 
+async function apiDisconnect(id: string) {
+  await fetch(`/api/devices/${id}`, { method: "DELETE" });
+}
+
+async function apiConnect(port: string, name: string) {
+  await fetch("/api/devices/connect", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ port, name }),
+  });
+}
+
 export function App() {
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
   const [nodes, setNodes] = useState<NodeInfo[]>([]);
@@ -283,12 +295,32 @@ export function App() {
                   <span style={{ color: "#475569", fontSize: "0.72rem" }}>No devices — POST /api/devices/connect</span>
                 ) : (
                   devices.map((d) => (
-                    <div key={d.id} style={styles.menuDevice}>
-                      <span style={{ color: d.status === "connected" ? "#22c55e" : "#ef4444" }}>●</span>
-                      <span style={{ color: "#e2e8f0", fontWeight: "bold" }}>{d.port}</span>
-                      {d.firmwareVersion && <span style={{ color: "#475569" }}>fw {d.firmwareVersion}</span>}
-                      {d.lastSeenAt && <span style={{ color: "#475569" }}>{formatRelative(d.lastSeenAt)}</span>}
-                      {d.batteryLevel != null && <BatteryBar level={d.batteryLevel} />}
+                    <div key={d.id} style={{ ...styles.menuDevice, flexDirection: "column", alignItems: "flex-start", gap: "0.25rem" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "0.4rem", width: "100%" }}>
+                        <span style={{ color: d.status === "connected" ? "#22c55e" : d.status === "connecting" ? "#f59e0b" : "#ef4444" }}>●</span>
+                        <span style={{ color: "#e2e8f0", fontWeight: "bold" }}>{d.port}</span>
+                        {d.firmwareVersion && <span style={{ color: "#475569" }}>fw {d.firmwareVersion}</span>}
+                        {d.lastSeenAt && <span style={{ color: "#475569" }}>{formatRelative(d.lastSeenAt)}</span>}
+                        {d.batteryLevel != null && <BatteryBar level={d.batteryLevel} />}
+                      </div>
+                      <div style={{ display: "flex", gap: "0.3rem" }}>
+                        {d.status === "connected" ? (
+                          <button
+                            style={deviceActionBtn("disconnect")}
+                            onClick={() => apiDisconnect(d.id)}
+                          >
+                            Disconnect
+                          </button>
+                        ) : (
+                          <button
+                            style={deviceActionBtn("connect")}
+                            onClick={() => apiConnect(d.port, d.name)}
+                            disabled={d.status === "connecting"}
+                          >
+                            {d.status === "connecting" ? "Connecting…" : "Connect"}
+                          </button>
+                        )}
+                      </div>
                     </div>
                   ))
                 )}
@@ -540,6 +572,19 @@ function menuNavBtn(active: boolean): React.CSSProperties {
     cursor: "pointer",
     fontFamily: "monospace",
     fontSize: "0.8rem",
+  };
+}
+
+function deviceActionBtn(action: "connect" | "disconnect"): React.CSSProperties {
+  return {
+    background: action === "connect" ? "#14532d" : "#450a0a",
+    border: `1px solid ${action === "connect" ? "#16a34a" : "#991b1b"}`,
+    color: action === "connect" ? "#4ade80" : "#f87171",
+    padding: "0.15rem 0.6rem",
+    borderRadius: "0.25rem",
+    cursor: "pointer",
+    fontFamily: "monospace",
+    fontSize: "0.72rem",
   };
 }
 
