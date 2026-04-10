@@ -52,6 +52,40 @@ function formatRelative(iso: string): string {
   return `${Math.floor(diff / 86400)}d ago`;
 }
 
+function batteryColor(level: number): string {
+  if (level <= 20) return "#ef4444";
+  if (level <= 50) return "#f59e0b";
+  return "#22c55e";
+}
+
+function BatteryBar({ level }: { level: number }) {
+  const color = batteryColor(level);
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: "0.3rem", marginLeft: "auto" }}>
+      <span style={{ color, fontSize: "0.7rem" }}>{level}%</span>
+      <span style={{
+        display: "inline-flex",
+        alignItems: "center",
+        width: "2.5rem",
+        height: "0.65rem",
+        border: `1px solid ${color}`,
+        borderRadius: "0.15rem",
+        padding: "0.08rem",
+        position: "relative",
+      }}>
+        <span style={{
+          display: "block",
+          width: `${level}%`,
+          height: "100%",
+          background: color,
+          borderRadius: "0.08rem",
+          transition: "width 0.5s ease",
+        }} />
+      </span>
+    </span>
+  );
+}
+
 export function App() {
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
   const [nodes, setNodes] = useState<NodeInfo[]>([]);
@@ -254,6 +288,7 @@ export function App() {
                       <span style={{ color: "#e2e8f0", fontWeight: "bold" }}>{d.port}</span>
                       {d.firmwareVersion && <span style={{ color: "#475569" }}>fw {d.firmwareVersion}</span>}
                       {d.lastSeenAt && <span style={{ color: "#475569" }}>{formatRelative(d.lastSeenAt)}</span>}
+                      {d.batteryLevel != null && <BatteryBar level={d.batteryLevel} />}
                     </div>
                   ))
                 )}
