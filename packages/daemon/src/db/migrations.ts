@@ -156,6 +156,17 @@ const migrations: string[] = [
   ALTER TABLE devices ADD COLUMN IF NOT EXISTS radio_config  JSONB;
   ALTER TABLE devices ADD COLUMN IF NOT EXISTS module_config JSONB;
   `,
+
+  /* 008 – hw_models: hardware model number → canonical enum name, populated by
+            fetching the upstream Meshtastic protobufs repo.  fetched_at tracks
+            when the last successful sync happened so we can throttle re-fetches. */
+  `
+  CREATE TABLE IF NOT EXISTS hw_models (
+    model_num  INT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    fetched_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+  `,
 ];
 
 export async function runMigrations(db: PGlite) {

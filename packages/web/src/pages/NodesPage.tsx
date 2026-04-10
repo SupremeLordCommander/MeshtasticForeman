@@ -33,18 +33,179 @@ function formatHops(hopsAway: number | null): string {
   return `${hopsAway} hop${hopsAway > 1 ? "s" : ""}`;
 }
 
+// Complete HardwareModel enum extracted from @meshtastic/core protobufs.
+// Keys are the numeric protobuf values; values are the canonical enum names.
 const HW_MODEL: Record<number, string> = {
-  0: "UNSET", 1: "TLORA_V2", 2: "TLORA_V1", 4: "TBEAM", 8: "T_ECHO",
-  10: "RAK4631", 13: "LILYGO_TBEAM_S3_CORE", 15: "NANO_G1",
-  43: "HELTEC_V3", 44: "HELTEC_WSL_V3",
-  48: "HELTEC_WIRELESS_TRACKER", 49: "HELTEC_WIRELESS_PAPER",
-  50: "T_DECK", 51: "T_WATCH_S3", 64: "TRACKER_T1000_E", 66: "WIO_E5",
-  95: "HELTEC_WIRELESS_PAPER_V3", 99: "SEEED_WIO_TRACKER_L1", 255: "PRIVATE_HW",
+  0:   "UNSET",
+  1:   "TLORA_V2",
+  2:   "TLORA_V1",
+  3:   "TLORA_V2_1_1P6",
+  4:   "TBEAM",
+  5:   "HELTEC_V2_0",
+  6:   "TBEAM_V0P7",
+  7:   "T_ECHO",
+  8:   "TLORA_V1_1P3",
+  9:   "RAK4631",
+  10:  "HELTEC_V2_1",
+  11:  "HELTEC_V1",
+  12:  "LILYGO_TBEAM_S3_CORE",
+  13:  "RAK11200",
+  14:  "NANO_G1",
+  15:  "TLORA_V2_1_1P8",
+  16:  "TLORA_T3_S3",
+  17:  "NANO_G1_EXPLORER",
+  18:  "NANO_G2_ULTRA",
+  19:  "LORA_TYPE",
+  20:  "WIPHONE",
+  21:  "WIO_WM1110",
+  22:  "RAK2560",
+  23:  "HELTEC_HRU_3601",
+  24:  "HELTEC_WIRELESS_BRIDGE",
+  25:  "STATION_G1",
+  26:  "RAK11310",
+  27:  "SENSELORA_RP2040",
+  28:  "SENSELORA_S3",
+  29:  "CANARYONE",
+  30:  "RP2040_LORA",
+  31:  "STATION_G2",
+  32:  "LORA_RELAY_V1",
+  33:  "NRF52840DK",
+  34:  "PPR",
+  35:  "GENIEBLOCKS",
+  36:  "NRF52_UNKNOWN",
+  37:  "PORTDUINO",
+  38:  "ANDROID_SIM",
+  39:  "DIY_V1",
+  40:  "NRF52840_PCA10059",
+  41:  "DR_DEV",
+  42:  "M5STACK",
+  43:  "HELTEC_V3",
+  44:  "HELTEC_WSL_V3",
+  45:  "BETAFPV_2400_TX",
+  46:  "BETAFPV_900_NANO_TX",
+  47:  "RPI_PICO",
+  48:  "HELTEC_WIRELESS_TRACKER",
+  49:  "HELTEC_WIRELESS_PAPER",
+  50:  "T_DECK",
+  51:  "T_WATCH_S3",
+  52:  "PICOMPUTER_S3",
+  53:  "HELTEC_HT62",
+  54:  "EBYTE_ESP32_S3",
+  55:  "ESP32_S3_PICO",
+  56:  "CHATTER_2",
+  57:  "HELTEC_WIRELESS_PAPER_V1_0",
+  58:  "HELTEC_WIRELESS_TRACKER_V1_0",
+  59:  "UNPHONE",
+  60:  "TD_LORAC",
+  61:  "CDEBYTE_EORA_S3",
+  62:  "TWC_MESH_V4",
+  63:  "NRF52_PROMICRO_DIY",
+  64:  "RADIOMASTER_900_BANDIT_NANO",
+  65:  "HELTEC_CAPSULE_SENSOR_V3",
+  66:  "HELTEC_VISION_MASTER_T190",
+  67:  "HELTEC_VISION_MASTER_E213",
+  68:  "HELTEC_VISION_MASTER_E290",
+  69:  "HELTEC_MESH_NODE_T114",
+  70:  "SENSECAP_INDICATOR",
+  71:  "TRACKER_T1000_E",
+  72:  "RAK3172",
+  73:  "WIO_E5",
+  74:  "RADIOMASTER_900_BANDIT",
+  75:  "ME25LS01_4Y10TD",
+  76:  "RP2040_FEATHER_RFM95",
+  77:  "M5STACK_COREBASIC",
+  78:  "M5STACK_CORE2",
+  79:  "RPI_PICO2",
+  80:  "M5STACK_CORES3",
+  81:  "SEEED_XIAO_S3",
+  82:  "MS24SF1",
+  83:  "TLORA_C6",
+  84:  "WISMESH_TAP",
+  85:  "ROUTASTIC",
+  86:  "MESH_TAB",
+  87:  "MESHLINK",
+  88:  "XIAO_NRF52_KIT",
+  89:  "THINKNODE_M1",
+  90:  "THINKNODE_M2",
+  91:  "T_ETH_ELITE",
+  92:  "HELTEC_SENSOR_HUB",
+  93:  "RESERVED_FRIED_CHICKEN",
+  94:  "HELTEC_MESH_POCKET",
+  95:  "SEEED_SOLAR_NODE",
+  96:  "NOMADSTAR_METEOR_PRO",
+  97:  "CROWPANEL",
+  98:  "LINK_32",
+  99:  "SEEED_WIO_TRACKER_L1",
+  100: "SEEED_WIO_TRACKER_L1_EINK",
+  101: "MUZI_R1_NEO",
+  102: "T_DECK_PRO",
+  103: "T_LORA_PAGER",
+  104: "M5STACK_RESERVED",
+  105: "WISMESH_TAG",
+  106: "RAK3312",
+  107: "THINKNODE_M5",
+  108: "HELTEC_MESH_SOLAR",
+  109: "T_ECHO_LITE",
+  110: "HELTEC_V4",
+  111: "M5STACK_C6L",
+  112: "M5STACK_CARDPUTER_ADV",
+  113: "HELTEC_WIRELESS_TRACKER_V2",
+  114: "T_WATCH_ULTRA",
+  115: "THINKNODE_M3",
+  116: "WISMESH_TAP_V2",
+  117: "RAK3401",
+  118: "RAK6421",
+  119: "THINKNODE_M4",
+  120: "THINKNODE_M6",
+  121: "MESHSTICK_1262",
+  122: "TBEAM_1_WATT",
+  123: "T5_S3_EPAPER_PRO",
+  124: "TBEAM_BPF",
+  125: "MINI_EPAPER_S3",
+  126: "TDISPLAY_S3_PRO",
+  127: "HELTEC_MESH_NODE_T096",
+  128: "TRACKER_T1000_E_PRO",
+  255: "PRIVATE_HW",
 };
 
-function hwModel(model: number | null): string {
+/** Convert a snake_case enum name to a readable label, e.g. TRACKER_T1000_E → Tracker T1000-E */
+function formatHwModelName(raw: string): string {
+  return raw
+    .split("_")
+    .map((word) => {
+      // Keep purely numeric or version-like tokens as-is (e.g. "V2", "S3", "1P6")
+      if (/^[0-9]/.test(word)) return word;
+      // Capitalise first letter, lowercase the rest
+      return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+    })
+    .join(" ");
+}
+
+// ---------------------------------------------------------------------------
+// Live fallback — queries the daemon's /api/hw-models endpoint, which is
+// populated server-side from the upstream protobufs repo (refreshed every 72 h).
+// ---------------------------------------------------------------------------
+
+let _hwModelFetch: Promise<Map<number, string>> | null = null;
+
+function fetchHwModelsFromApi(): Promise<Map<number, string>> {
+  if (_hwModelFetch) return _hwModelFetch;
+  _hwModelFetch = fetch("/api/hw-models")
+    .then((res) => {
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json() as Promise<Record<string, string>>;
+    })
+    .then((data) => new Map(Object.entries(data).map(([k, v]) => [Number(k), v])))
+    .catch(() => new Map());
+  return _hwModelFetch;
+}
+
+function hwModel(model: number | null, protoMap: Map<number, string>): string {
   if (model === null) return "—";
-  return HW_MODEL[model] ?? `#${model}`;
+  const name = HW_MODEL[model] ?? protoMap.get(model);
+  if (!name) return `#${model}`;
+  if (name === "UNSET") return "—";
+  return formatHwModelName(name);
 }
 
 // ---------------------------------------------------------------------------
@@ -108,7 +269,7 @@ function filterNodes(list: MergedNode[], query: string): MergedNode[] {
 
 type SortCol = "name" | "id" | "connection" | "lastHeard" | "snr" | "model" | "location" | "distance";
 
-function sortMerged(list: MergedNode[], col: SortCol, dir: "asc" | "desc"): MergedNode[] {
+function sortMerged(list: MergedNode[], col: SortCol, dir: "asc" | "desc", protoMap: Map<number, string>): MergedNode[] {
   return [...list].sort((a, b) => {
     const pa = a.mesh ?? a.mqtt!;
     const pb = b.mesh ?? b.mqtt!;
@@ -140,8 +301,8 @@ function sortMerged(list: MergedNode[], col: SortCol, dir: "asc" | "desc"): Merg
         break;
       }
       case "model": {
-        const ma = hwModel(pa.hwModel);
-        const mb = hwModel(pb.hwModel);
+        const ma = hwModel(pa.hwModel, protoMap);
+        const mb = hwModel(pb.hwModel, protoMap);
         cmp = ma.localeCompare(mb);
         break;
       }
@@ -189,6 +350,14 @@ export function NodesPage({ devices, nodes, mqttNodes }: Props) {
   const [sortCol, setSortCol] = useState<SortCol>("distance");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [selectedNodeId, setSelectedNodeId] = useState<number | null>(null);
+  const [protoMap, setProtoMap] = useState<Map<number, string>>(new Map());
+
+  // Fetch the DB-backed hw-models map once on mount. The daemon syncs it from
+  // the protobufs repo at startup (throttled to once per 72 h), so this is
+  // just a cheap local API call — no GitHub traffic from the browser.
+  useEffect(() => {
+    fetchHwModelsFromApi().then(setProtoMap);
+  }, []);
 
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
     try {
@@ -260,7 +429,7 @@ export function NodesPage({ devices, nodes, mqttNodes }: Props) {
   const allMerged = buildMergedNodes(nodes, mqttNodes);
   const filtered  = filterNodes(allMerged, filter);
 
-  const apply = (list: MergedNode[]) => sortMerged(list, sortCol, sortDir);
+  const apply = (list: MergedNode[]) => sortMerged(list, sortCol, sortDir, protoMap);
 
   const matched  = apply(filtered.filter((n) => n.mesh && n.mqtt));
   const meshOnly = apply(filtered.filter((n) => n.mesh && !n.mqtt));
@@ -275,7 +444,7 @@ export function NodesPage({ devices, nodes, mqttNodes }: Props) {
 
   const nodeRowProps = {
     pending, traceroutes, confirmRemove, deviceId,
-    selectedNodeId,
+    selectedNodeId, protoMap,
     onRowClick: (id: number) => setSelectedNodeId((prev) => prev === id ? null : id),
     onRequestPosition: requestPosition,
     onRequestTraceroute: requestTraceroute,
@@ -464,6 +633,7 @@ interface NodeRowsProps {
   confirmRemove: number | null;
   deviceId: string | null;
   selectedNodeId: number | null;
+  protoMap: Map<number, string>;
   onRowClick: (id: number) => void;
   onRequestPosition: (id: number) => void;
   onRequestTraceroute: (id: number) => void;
@@ -474,7 +644,7 @@ interface NodeRowsProps {
 
 function NodeRows({
   merged, pending, traceroutes, confirmRemove, deviceId,
-  selectedNodeId, onRowClick,
+  selectedNodeId, protoMap, onRowClick,
   onRequestPosition, onRequestTraceroute, onRemove, onConfirmRemove, onClearTraceroute,
 }: NodeRowsProps) {
   const { nodeId, mesh, mqtt } = merged;
@@ -511,7 +681,7 @@ function NodeRows({
         </td>
         <td style={styles.td}>{formatLastHeard(primary.lastHeard)}</td>
         <td style={styles.td}>{primary.snr != null ? `${primary.snr.toFixed(1)} dB` : "—"}</td>
-        <td style={styles.td}>{hwModel(primary.hwModel)}</td>
+        <td style={styles.td}>{hwModel(primary.hwModel, protoMap)}</td>
         <td style={styles.td}>{formatDistance(mqtt?.distanceM ?? null)}</td>
         <td style={{ ...styles.td, ...styles.mono }}>
           {primary.latitude != null && primary.longitude != null

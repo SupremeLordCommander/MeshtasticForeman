@@ -12,6 +12,7 @@ import { DeviceManager } from "./device/device-manager.js";
 import { MqttGateway } from "./mqtt/gateway.js";
 import { registerDeviceRoutes } from "./routes/devices.js";
 import { registerWsRoute } from "./routes/websocket.js";
+import { syncHwModels } from "./hw-models.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -138,6 +139,12 @@ async function main() {
 
   await app.listen({ port: PORT, host: HOST });
   console.log(`[foreman] daemon listening on http://${HOST}:${PORT}`);
+
+  // Background: sync hardware model names from the protobufs repo.
+  // Runs after the server is up so it never delays startup.
+  syncHwModels(db).catch((err) =>
+    console.warn("[hw-models] unexpected error during sync:", err)
+  );
 }
 
 main().catch((err) => fatalError("startup failure", err));
