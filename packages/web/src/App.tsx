@@ -460,6 +460,14 @@ export function App() {
                 </span>
               </div>
 
+              <div style={styles.menuDivider} />
+
+              <div style={{ padding: "0.4rem 0.75rem", textAlign: "right" }}>
+                <span style={{ color: "#1e293b", fontSize: "0.65rem", fontFamily: "monospace" }}>
+                  v{__APP_VERSION__}
+                </span>
+              </div>
+
             </div>
           )}
         </div>
