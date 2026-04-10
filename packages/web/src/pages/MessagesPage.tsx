@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import type { DeviceInfo, NodeInfo, MqttNode, Message } from "@foreman/shared";
 import { foremanClient } from "../ws/client.js";
 import {
@@ -12,6 +12,8 @@ interface Props {
   devices: DeviceInfo[];
   nodes: NodeInfo[];
   mqttNodes: MqttNode[];
+  initialNodeId?: number | null;
+  onInitialNodeConsumed?: () => void;
 }
 
 function nodeHex(nodeId: number) {
@@ -182,23 +184,89 @@ function ThreadView({ nodeId, nodes, mqttNodes, deviceId }: ThreadProps) {
 
 // ─── Main page ───────────────────────────────────────────────────────────────
 
-export function MessagesPage({ devices, nodes, mqttNodes }: Props) {
+export function MessagesPage({ devices, nodes, mqttNodes, initialNodeId, onInitialNodeConsumed }: Props) {
   const conversations = useConversationList();
   const [selectedNodeId, setSelectedNodeId] = useState<number | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const pickerRef = useRef<HTMLDivElement>(null);
   const deviceId = devices.find((d) => d.status === "connected")?.id ?? null;
 
-  // Auto-select first conversation when list populates
+  // Honour external navigation (e.g. "✉ Msg" from Nodes page)
+  useEffect(() => {
+    if (initialNodeId != null) {
+      setSelectedNodeId(initialNodeId);
+      onInitialNodeConsumed?.();
+    }
+  }, [initialNodeId, onInitialNodeConsumed]);
+
+  // Auto-select first conversation when list first populates (only if nothing targeted)
   useEffect(() => {
     if (selectedNodeId == null && conversations.length > 0) {
       setSelectedNodeId(conversations[0].nodeId);
     }
   }, [conversations, selectedNodeId]);
 
+  // Close picker on outside click
+  useEffect(() => {
+    if (!pickerOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (pickerRef.current && !pickerRef.current.contains(e.target as Node)) {
+        setPickerOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [pickerOpen]);
+
+  const openConversation = useCallback((nodeId: number) => {
+    setSelectedNodeId(nodeId);
+    setPickerOpen(false);
+    if (deviceId) loadConversation(deviceId, nodeId);
+  }, [deviceId]);
+
+  // Mesh nodes sorted by most-recently-heard for the picker
+  const meshNodesSorted = [...nodes].sort((a, b) => {
+    if (!a.lastHeard) return 1;
+    if (!b.lastHeard) return -1;
+    return new Date(b.lastHeard).getTime() - new Date(a.lastHeard).getTime();
+  });
+
   return (
     <div style={styles.page}>
       {/* Left: conversation list */}
       <div style={styles.sidebar}>
-        <div style={styles.sidebarHeader}>Conversations</div>
+        <div style={styles.sidebarHeaderRow}>
+          <span style={styles.sidebarHeader}>Conversations</span>
+          {deviceId && (
+            <div ref={pickerRef} style={{ position: "relative" }}>
+              <button style={newBtnStyle(pickerOpen)} onClick={() => setPickerOpen((v) => !v)} title="Start a new conversation">
+                + New
+              </button>
+              {pickerOpen && (
+                <div style={styles.picker}>
+                  <div style={styles.pickerLabel}>Local mesh nodes</div>
+                  {meshNodesSorted.length === 0 ? (
+                    <div style={styles.pickerEmpty}>No mesh nodes seen yet.</div>
+                  ) : (
+                    meshNodesSorted.map((n) => (
+                      <button
+                        key={n.nodeId}
+                        style={pickerRowStyle(n.nodeId === selectedNodeId)}
+                        onClick={() => openConversation(n.nodeId)}
+                      >
+                        <span style={styles.pickerName}>{n.shortName ?? n.longName ?? nodeHex(n.nodeId)}</span>
+                        {n.longName && n.shortName && (
+                          <span style={styles.pickerSub}>{n.longName}</span>
+                        )}
+                        <span style={styles.pickerHex}>{nodeHex(n.nodeId)}</span>
+                      </button>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
         {conversations.length === 0 ? (
           <div style={styles.empty}>No conversations yet.</div>
         ) : (
@@ -262,6 +330,35 @@ function bubbleStyle(outgoing: boolean, relayed: boolean): React.CSSProperties {
   };
 }
 
+function newBtnStyle(open: boolean): React.CSSProperties {
+  return {
+    background: open ? "#1e3a5f" : "#1e293b",
+    border: `1px solid ${open ? "#3b82f6" : "#334155"}`,
+    color: open ? "#60a5fa" : "#94a3b8",
+    padding: "0.15rem 0.5rem",
+    borderRadius: "0.3rem",
+    cursor: "pointer",
+    fontFamily: "monospace",
+    fontSize: "0.72rem",
+  };
+}
+
+function pickerRowStyle(active: boolean): React.CSSProperties {
+  return {
+    display: "flex",
+    alignItems: "baseline",
+    gap: "0.3rem",
+    width: "100%",
+    background: active ? "#1e3a5f" : "transparent",
+    border: "none",
+    color: "inherit",
+    cursor: "pointer",
+    textAlign: "left",
+    padding: "0.45rem 0.75rem",
+    borderBottom: "1px solid #0f172a",
+  };
+}
+
 function convoRowStyle(active: boolean): React.CSSProperties {
   return {
     display: "block",
@@ -306,13 +403,58 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     flexDirection: "column",
   },
+  sidebarHeaderRow: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    padding: "0 0.25rem",
+    marginBottom: "0.5rem",
+  },
   sidebarHeader: {
     color: "#334155",
     fontSize: "0.65rem",
-    textTransform: "uppercase",
+    textTransform: "uppercase" as const,
     letterSpacing: "0.08em",
-    padding: "0 0.25rem",
-    marginBottom: "0.5rem",
+  },
+  picker: {
+    position: "absolute" as const,
+    top: "calc(100% + 0.3rem)",
+    left: 0,
+    width: "220px",
+    background: "#0f172a",
+    border: "1px solid #1e293b",
+    borderRadius: "0.4rem",
+    boxShadow: "0 6px 20px rgba(0,0,0,0.5)",
+    zIndex: 50,
+    overflow: "hidden",
+  },
+  pickerLabel: {
+    color: "#334155",
+    fontSize: "0.62rem",
+    textTransform: "uppercase" as const,
+    letterSpacing: "0.07em",
+    padding: "0.5rem 0.75rem 0.3rem",
+  },
+  pickerEmpty: {
+    color: "#475569",
+    fontSize: "0.75rem",
+    padding: "0.5rem 0.75rem 0.75rem",
+  },
+  pickerName: {
+    color: "#e2e8f0",
+    fontWeight: "bold",
+    fontSize: "0.82rem",
+  },
+  pickerSub: {
+    color: "#64748b",
+    fontSize: "0.72rem",
+    marginLeft: "0.4rem",
+  },
+  pickerHex: {
+    color: "#334155",
+    fontFamily: "monospace",
+    fontSize: "0.68rem",
+    marginLeft: "auto",
   },
   threadPane: {
     flex: 1,

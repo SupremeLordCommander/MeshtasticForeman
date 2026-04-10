@@ -336,13 +336,14 @@ interface Props {
   devices: DeviceInfo[];
   nodes: NodeInfo[];
   mqttNodes: MqttNode[];
+  onMessage?: (nodeId: number) => void;
 }
 
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
-export function NodesPage({ devices, nodes, mqttNodes }: Props) {
+export function NodesPage({ devices, nodes, mqttNodes, onMessage }: Props) {
   const [pending, setPending] = useState<Record<string, "position" | "traceroute" | "remove">>({});
   const [traceroutes, setTraceroutes] = useState<Record<number, TracerouteResult>>({});
   const [confirmRemove, setConfirmRemove] = useState<number | null>(null);
@@ -451,6 +452,7 @@ export function NodesPage({ devices, nodes, mqttNodes }: Props) {
     onRemove: removeNode,
     onConfirmRemove: setConfirmRemove,
     onClearTraceroute: (id: number) => setTraceroutes((prev) => { const n = { ...prev }; delete n[id]; return n; }),
+    onMessage,
   };
 
   const selectedMerged = selectedNodeId != null
@@ -640,12 +642,14 @@ interface NodeRowsProps {
   onRemove: (id: number) => void;
   onConfirmRemove: (id: number | null) => void;
   onClearTraceroute: (id: number) => void;
+  onMessage?: (id: number) => void;
 }
 
 function NodeRows({
   merged, pending, traceroutes, confirmRemove, deviceId,
   selectedNodeId, protoMap, onRowClick,
   onRequestPosition, onRequestTraceroute, onRemove, onConfirmRemove, onClearTraceroute,
+  onMessage,
 }: NodeRowsProps) {
   const { nodeId, mesh, mqtt } = merged;
   const key = String(nodeId);
@@ -692,6 +696,15 @@ function NodeRows({
           <td style={{ ...styles.td, whiteSpace: "nowrap" }}>
             {!isMqttOnly && (
               <>
+                {onMessage && (
+                  <button
+                    style={{ ...styles.actionBtn, marginRight: "0.4rem" }}
+                    onClick={(e) => { e.stopPropagation(); onMessage(nodeId); }}
+                    title="Open conversation in Messages tab"
+                  >
+                    ✉ Msg
+                  </button>
+                )}
                 <button style={styles.actionBtn} disabled={isPending} onClick={() => onRequestPosition(nodeId)} title="Ask node to broadcast its current position">
                   {pending[key] === "position" ? "…" : "📍 Pos"}
                 </button>
