@@ -80,12 +80,16 @@ export async function registerWsRoute(
       };
       socket.send(JSON.stringify(deviceListEvent));
 
-      // Send all known nodes for each connected device
+      // Send all known nodes and config for each device
       for (const d of devices) {
         const nodes = await deviceManager.listNodes(d.id);
-        if (nodes.length === 0) continue;
-        const nodeListEvent: ServerEvent = { type: "node:list", payload: nodes };
-        socket.send(JSON.stringify(nodeListEvent));
+        if (nodes.length > 0) {
+          socket.send(JSON.stringify({ type: "node:list", payload: nodes } satisfies ServerEvent));
+        }
+        const config = await deviceManager.getDeviceConfig(d.id);
+        if (config) {
+          socket.send(JSON.stringify({ type: "device:config", payload: config } satisfies ServerEvent));
+        }
       }
 
       // Send known MQTT-sourced nodes
@@ -298,6 +302,35 @@ async function handleClientCommand(
         type: "node:removed",
         payload: { nodeId },
       } satisfies ServerEvent));
+      break;
+    }
+
+    case "device:config-request": {
+      const { deviceId } = command.payload;
+      const config = await deviceManager.getDeviceConfig(deviceId);
+      if (!config) {
+        socket.send(JSON.stringify({
+          type: "error",
+          payload: { code: "DEVICE_NOT_FOUND", message: `No config for device ${deviceId}` },
+        }));
+        return;
+      }
+      socket.send(JSON.stringify({ type: "device:config", payload: config } satisfies ServerEvent));
+      console.log(`[ws] device:config-request → ${deviceId}`);
+      break;
+    }
+
+    case "device:set-config": {
+      const { deviceId, namespace, section, value } = command.payload;
+      try {
+        await deviceManager.applyConfigSection(deviceId, namespace, section, value as Record<string, unknown>);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        socket.send(JSON.stringify({
+          type: "error",
+          payload: { code: "SET_CONFIG_FAILED", message: msg },
+        } satisfies ServerEvent));
+      }
       break;
     }
 

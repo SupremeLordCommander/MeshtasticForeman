@@ -128,3 +128,15 @@ export interface NodeOverride {
   altitude: number | null;
   notes: string | null;
 }
+
+/**
+ * Full device configuration snapshot.
+ * radioConfig and moduleConfig are keyed by section name (e.g. "lora", "mqtt")
+ * and contain the raw protobuf values as plain JSON.
+ */
+export interface DeviceConfig {
+  deviceId: string;
+  radioConfig: Record<string, unknown>;
+  moduleConfig: Record<string, unknown>;
+  channels: Channel[];
+}

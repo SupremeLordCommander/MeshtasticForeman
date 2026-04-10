@@ -2,6 +2,7 @@ import { useState, useEffect, Fragment } from "react";
 import type { DeviceInfo, NodeInfo, MqttNode } from "@foreman/shared";
 import { foremanClient } from "../ws/client.js";
 import logo from "../assets/logo.png";
+import { NodeDetailPanel } from "./NodeDetailPanel.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -187,6 +188,7 @@ export function NodesPage({ devices, nodes, mqttNodes }: Props) {
   const [filter, setFilter] = useState("");
   const [sortCol, setSortCol] = useState<SortCol>("distance");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const [selectedNodeId, setSelectedNodeId] = useState<number | null>(null);
 
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
     try {
@@ -273,6 +275,8 @@ export function NodesPage({ devices, nodes, mqttNodes }: Props) {
 
   const nodeRowProps = {
     pending, traceroutes, confirmRemove, deviceId,
+    selectedNodeId,
+    onRowClick: (id: number) => setSelectedNodeId((prev) => prev === id ? null : id),
     onRequestPosition: requestPosition,
     onRequestTraceroute: requestTraceroute,
     onRemove: removeNode,
@@ -280,8 +284,21 @@ export function NodesPage({ devices, nodes, mqttNodes }: Props) {
     onClearTraceroute: (id: number) => setTraceroutes((prev) => { const n = { ...prev }; delete n[id]; return n; }),
   };
 
+  const selectedMerged = selectedNodeId != null
+    ? allMerged.find((m) => m.nodeId === selectedNodeId) ?? null
+    : null;
+
   return (
     <div style={styles.page}>
+      {selectedMerged && (
+        <NodeDetailPanel
+          nodeId={selectedMerged.nodeId}
+          mesh={selectedMerged.mesh}
+          mqtt={selectedMerged.mqtt}
+          devices={devices}
+          onClose={() => setSelectedNodeId(null)}
+        />
+      )}
       <section style={styles.section}>
         {/* Title + search bar row */}
         <div style={styles.titleRow}>
@@ -446,6 +463,8 @@ interface NodeRowsProps {
   traceroutes: Record<number, TracerouteResult>;
   confirmRemove: number | null;
   deviceId: string | null;
+  selectedNodeId: number | null;
+  onRowClick: (id: number) => void;
   onRequestPosition: (id: number) => void;
   onRequestTraceroute: (id: number) => void;
   onRemove: (id: number) => void;
@@ -455,6 +474,7 @@ interface NodeRowsProps {
 
 function NodeRows({
   merged, pending, traceroutes, confirmRemove, deviceId,
+  selectedNodeId, onRowClick,
   onRequestPosition, onRequestTraceroute, onRemove, onConfirmRemove, onClearTraceroute,
 }: NodeRowsProps) {
   const { nodeId, mesh, mqtt } = merged;
@@ -464,10 +484,14 @@ function NodeRows({
   const colCount = deviceId ? 9 : 8;
   const primary = mesh ?? mqtt!;
   const isMqttOnly = !mesh;
+  const isSelected = selectedNodeId === nodeId;
 
   return (
     <Fragment>
-      <tr style={styles.tr}>
+      <tr
+        style={{ ...styles.tr, background: isSelected ? "#0f2a4a" : undefined, cursor: "pointer" }}
+        onClick={() => onRowClick(nodeId)}
+      >
         <td style={styles.td}>
           <strong>{primary.longName ?? primary.shortName ?? "Unknown"}</strong>
           {primary.shortName && primary.longName && (

@@ -9,6 +9,7 @@ import type {
   Waypoint,
   ActivityEntry,
   LogEntry,
+  DeviceConfig,
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -35,6 +36,7 @@ export type ServerEvent =
   | { type: "log:entry"; payload: LogEntry }
   | { type: "log:snapshot"; payload: LogEntry[] }
   | { type: "mqtt:status"; payload: { enabled: boolean } }
+  | { type: "device:config"; payload: DeviceConfig }
   | { type: "error"; payload: { code: string; message: string } };
 
 // ---------------------------------------------------------------------------
@@ -112,6 +114,24 @@ export const mqttToggleSchema = z.object({
   payload: z.object({ enabled: z.boolean() }),
 });
 
+export const requestDeviceConfigSchema = z.object({
+  type: z.literal("device:config-request"),
+  payload: z.object({ deviceId: z.string().uuid() }),
+});
+
+export const setDeviceConfigSchema = z.object({
+  type: z.literal("device:set-config"),
+  payload: z.object({
+    deviceId: z.string().uuid(),
+    /** "radio" | "module" */
+    namespace: z.enum(["radio", "module"]),
+    /** section key, e.g. "mqtt", "lora", "device" */
+    section: z.string().min(1),
+    /** plain-object fields to merge into the section */
+    value: z.record(z.unknown()),
+  }),
+});
+
 export const clientCommandSchema = z.discriminatedUnion("type", [
   sendMessageSchema,
   subscribePacketsSchema,
@@ -122,6 +142,8 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   requestTracerouteSchema,
   removeNodeSchema,
   mqttToggleSchema,
+  requestDeviceConfigSchema,
+  setDeviceConfigSchema,
 ]);
 
 export type ClientCommand = z.infer<typeof clientCommandSchema>;
