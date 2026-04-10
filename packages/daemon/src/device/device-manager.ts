@@ -47,6 +47,8 @@ export class DeviceManager extends EventEmitter {
   private devices = new Map<string, ConnectedDevice>();
   /** Ports with a pending reconnect timer — prevents stacked reconnect loops */
   private reconnectingPorts = new Set<string>();
+  /** Reconnect attempt count per port — used for exponential backoff */
+  private reconnectAttempts = new Map<string, number>();
   private mqttGateway: MqttGateway | null = null;
   /** Last time each device received any mesh packet (for watchdog) */
   private lastPacketMs = new Map<string, number>();
@@ -271,6 +273,7 @@ export class DeviceManager extends EventEmitter {
     this.devices.delete(deviceId);
     this.myNodeIds.delete(deviceId);
     this.batteryLevels.delete(deviceId);
+    this.reconnectAttempts.delete(device.port);
     this.mqttGateway?.detachDevice(deviceId);
     await device.transport.disconnect().catch(() => {});
 
@@ -465,15 +468,31 @@ export class DeviceManager extends EventEmitter {
   private _scheduleReconnect(deviceId: string, port: string, name: string) {
     if (this.reconnectingPorts.has(port)) return;
     this.reconnectingPorts.add(port);
+
+    const attempt = (this.reconnectAttempts.get(port) ?? 0) + 1;
+    this.reconnectAttempts.set(port, attempt);
+
+    // Exponential backoff: 5s, 10s, 20s, 40s, capped at 60s
+    const delayMs = Math.min(5000 * Math.pow(2, attempt - 1), 60_000);
+    console.log(`[devices] reconnect attempt ${attempt} for ${name} in ${delayMs / 1000}s`);
+
     setTimeout(async () => {
       this.reconnectingPorts.delete(port);
-      if (this.devices.has(deviceId)) return; // already reconnected by another path
-      console.log(`[devices] attempting reconnect for ${name} on ${port}`);
-      await this.connect(port, name, deviceId).catch((err) => {
-        console.warn(`[devices] reconnect failed for ${port}:`, err.message);
-        // Will retry on next disconnect event if the device comes back
-      });
-    }, 5000);
+      if (this.devices.has(deviceId)) {
+        this.reconnectAttempts.delete(port);
+        return; // already reconnected by another path
+      }
+      console.log(`[devices] attempting reconnect for ${name} on ${port} (attempt ${attempt})`);
+      try {
+        await this.connect(port, name, deviceId);
+        this.reconnectAttempts.delete(port); // success — reset backoff
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[devices] reconnect failed for ${port}:`, msg);
+        // Schedule another attempt — keeps retrying until the device comes back
+        this._scheduleReconnect(deviceId, port, name);
+      }
+    }, delayMs);
   }
 
   private async _handleMessage(

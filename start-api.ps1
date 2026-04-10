@@ -9,4 +9,12 @@ Write-Host "  $name v$version" -ForegroundColor Gray
 Write-Host ""
 
 Set-Location $root
-pnpm --filter @foreman/daemon dev
+
+while ($true) {
+    pnpm --filter @foreman/daemon dev
+    $code = $LASTEXITCODE
+    Write-Host ""
+    Write-Host "  Daemon exited (code $code) — restarting..." -ForegroundColor Yellow
+    Write-Host ""
+    Start-Sleep -Seconds 1
+}

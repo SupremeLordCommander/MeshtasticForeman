@@ -21,4 +21,11 @@ if [ -f "$ROOT/.env" ]; then
 fi
 
 cd "$ROOT"
-pnpm --filter @foreman/daemon dev
+
+while true; do
+    pnpm --filter @foreman/daemon dev || true
+    echo ""
+    echo "  Daemon exited — restarting..."
+    echo ""
+    sleep 1
+done
