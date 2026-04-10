@@ -116,6 +116,7 @@ export function App() {
   const [deviceConfigs, setDeviceConfigs] = useState<Map<string, DeviceConfig>>(new Map());
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const [messageTarget, setMessageTarget] = useState<number | null>(null);
 
   // ── Map filters ────────────────────────────────────────────────────────────
   const [showMesh, setShowMesh] = useState(true);
@@ -466,7 +467,12 @@ export function App() {
 
       {tab === "nodes" && (
         <div style={{ flex: 1, overflowY: "auto" }}>
-          <NodesPage devices={devices} nodes={effectiveNodes} mqttNodes={effectiveMqttNodes} />
+          <NodesPage
+            devices={devices}
+            nodes={effectiveNodes}
+            mqttNodes={effectiveMqttNodes}
+            onMessage={(nodeId) => { setMessageTarget(nodeId); setTab("messages"); }}
+          />
         </div>
       )}
       {tab === "map" && (
@@ -481,7 +487,13 @@ export function App() {
       )}
       {tab === "messages" && (
         <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
-          <MessagesPage devices={devices} nodes={effectiveNodes} mqttNodes={effectiveMqttNodes} />
+          <MessagesPage
+            devices={devices}
+            nodes={effectiveNodes}
+            mqttNodes={effectiveMqttNodes}
+            initialNodeId={messageTarget}
+            onInitialNodeConsumed={() => setMessageTarget(null)}
+          />
         </div>
       )}
       {tab === "activity" && (
