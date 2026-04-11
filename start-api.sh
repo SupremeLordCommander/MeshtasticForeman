@@ -2,12 +2,11 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-NAME=$(node -p "require('$ROOT/packages/daemon/package.json').name" 2>/dev/null || echo "@foreman/daemon")
-VERSION=$(node -p "require('$ROOT/packages/daemon/package.json').version" 2>/dev/null || echo "unknown")
+VERSION=$(grep '^VERSION=' "$ROOT/VERSION.txt" | cut -d= -f2)
 
 echo ""
 echo "  Meshtastic Foreman — API Daemon"
-echo "  $NAME v$VERSION"
+echo "  v$VERSION"
 echo ""
 
 # Warn if MESHTASTIC_PORT looks like a Windows COM port

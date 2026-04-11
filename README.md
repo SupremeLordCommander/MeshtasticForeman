@@ -1,5 +1,7 @@
 # MeshtasticForeman
 
+**Version:** — see [VERSION.txt](VERSION.txt)
+
 ## Goals
 
 A self-hosted API backend and web frontend for Meshtastic devices.
@@ -13,6 +15,9 @@ A self-hosted API backend and web frontend for Meshtastic devices.
 - **Richer device data** — exposes additional info like GPS connection status
 - **User-assignable metadata** — alias names, manual positions, and notes on any node
 - **Modular** — individual subsystems (MQTT gateway, auto-connect) can be toggled via environment variables
+- **Installers** - Windows and Linux based devices for easy deployment
+
+
 
 ## NOTE!
 
@@ -108,6 +113,7 @@ The daemon acts as a WiFi gateway for nRF52-based Meshtastic devices that have n
 - [ ] **Node list improvements** — find a cleaner way to present node data
 - [ ] **Message system bugs** — ongoing fixes to the messaging subsystem
 - [ ] **Multi-device MQTT messages** — use a private channel key to decrypt messages from other devices via MQTT
+- [ ] **Multiple devices connected to the same API backend daemon.
 
 
 ## Contributing
