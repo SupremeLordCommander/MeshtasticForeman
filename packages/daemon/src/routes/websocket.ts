@@ -77,6 +77,9 @@ export async function registerWsRoute(
             hardwareModel: d.hw_model ?? null,
             firmwareVersion: d.firmware ?? null,
             batteryLevel: deviceManager.getBatteryLevel(d.id),
+            hasGpsPosition: deviceManager.hasGpsPosition(d.id),
+            gpsDetail: deviceManager.getGpsDetail(d.id),
+            ownNodeId: deviceManager.getMyNodeId(d.id) ?? null,
           };
         }),
       };
@@ -269,17 +272,15 @@ async function handleClientCommand(
         }));
         return;
       }
-      try {
-        await device.meshDevice.requestPosition(nodeId);
+      // Re-emit cached GPS immediately so the frontend spinner clears with current data.
+      // The requestPosition call below may or may not yield fresher data afterward.
+      deviceManager.refreshGpsPosition(deviceId);
+      // Fire-and-forget: ask the hardware for a fresh position in the background.
+      device.meshDevice.requestPosition(nodeId).then(() => {
         console.log(`[ws] node:request-position → ${device.name} for node !${nodeId.toString(16).padStart(8,"0")}`);
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.log(`[ws] node:request-position failed for !${nodeId.toString(16).padStart(8,"0")}: ${msg}`);
-        socket.send(JSON.stringify({
-          type: "error",
-          payload: { code: "NODE_UNREACHABLE", message: `Position request failed (${msg})`, nodeId },
-        }));
-      }
+      }).catch((err: unknown) => {
+        console.log(`[ws] node:request-position failed for !${nodeId.toString(16).padStart(8,"0")}: ${err instanceof Error ? err.message : String(err)}`);
+      });
       break;
     }
 

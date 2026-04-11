@@ -252,6 +252,22 @@ export class MqttGateway extends EventEmitter {
         if (!hadPosition && state.announceScheduled) {
           this._publishSelf(deviceId).catch(console.error);
         }
+        // Notify device-manager of current GPS detail on every fix
+        if (state.cachedPosition.latitudeI && state.cachedPosition.longitudeI) {
+          const pos = state.cachedPosition;
+          this.emit("gps:position", deviceId, {
+            latitude:       pos.latitudeI  / 1e7,
+            longitude:      pos.longitudeI / 1e7,
+            altitude:       pos.altitude   ?? null,
+            satsInView:     pos.satsInView  > 0 ? pos.satsInView  : null,
+            fixType:        pos.fixType     > 0 ? pos.fixType     : null,
+            fixQuality:     pos.fixQuality  > 0 ? pos.fixQuality  : null,
+            pdop:           pos.PDOP        > 0 ? pos.PDOP        : null,
+            hdop:           pos.HDOP        > 0 ? pos.HDOP        : null,
+            locationSource: pos.locationSource != null ? pos.locationSource : null,
+            gpsTimestamp:   pos.time        ? new Date(Number(pos.time) * 1000).toISOString() : null,
+          });
+        }
         // Recalculate distance_m for all known nodes — rate-limited to once per 5 min
         const RECALC_INTERVAL_MS = 5 * 60 * 1000;
         if (

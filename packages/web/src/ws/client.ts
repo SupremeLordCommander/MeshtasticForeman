@@ -1,6 +1,7 @@
 import type { ServerEvent, ClientCommand } from "@foreman/shared";
 
 type EventHandler = (event: ServerEvent) => void;
+type ConnectionHandler = (connected: boolean) => void;
 
 /**
  * Persistent WebSocket client for the Foreman daemon.
@@ -10,6 +11,7 @@ type EventHandler = (event: ServerEvent) => void;
 export class ForemanClient {
   private ws: WebSocket | null = null;
   private handlers = new Set<EventHandler>();
+  private connectionHandlers = new Set<ConnectionHandler>();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private shouldReconnect = true;
 
@@ -36,6 +38,11 @@ export class ForemanClient {
     return () => this.handlers.delete(handler);
   }
 
+  onConnection(handler: ConnectionHandler) {
+    this.connectionHandlers.add(handler);
+    return () => this.connectionHandlers.delete(handler);
+  }
+
   private open() {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
@@ -47,6 +54,7 @@ export class ForemanClient {
 
     ws.onopen = () => {
       console.log("[ws] connected to daemon");
+      for (const h of this.connectionHandlers) h(true);
     };
 
     ws.onmessage = (e) => {
@@ -61,6 +69,7 @@ export class ForemanClient {
 
     ws.onclose = () => {
       console.log("[ws] disconnected");
+      for (const h of this.connectionHandlers) h(false);
       if (this.shouldReconnect) {
         this.reconnectTimer = setTimeout(() => this.open(), 2000);
       }

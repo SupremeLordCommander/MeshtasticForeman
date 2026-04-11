@@ -8,7 +8,9 @@
       "Read(//d/Projects/GitHub/meshtastic_web/**)",
       "Bash(grep -r \"QueueStatus\\\\b\" d:/Projects/GitHub/MeshtasticForeman/packages/daemon/node_modules/@meshtastic/core/dist/*.js -h)",
       "Read(//d/Projects/GitHub/MeshtasticForeman/node_modules/**)",
-      "Bash(ls d:/Projects/GitHub/MeshtasticForeman/*.json d:/Projects/GitHub/MeshtasticForeman/.env*)"
+      "Bash(ls d:/Projects/GitHub/MeshtasticForeman/*.json d:/Projects/GitHub/MeshtasticForeman/.env*)",
+      "Bash(curl -s \"https://raw.githubusercontent.com/meshtastic/firmware/develop/src/mesh/NodeDB.cpp\")",
+      "Bash(curl -s \"https://raw.githubusercontent.com/meshtastic/firmware/develop/src/gps/GPS.h\")"
     ]
   }
 }
