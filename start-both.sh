@@ -2,15 +2,10 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-API_NAME=$(node -p "require('$ROOT/packages/daemon/package.json').name" 2>/dev/null || echo "@foreman/daemon")
-API_VERSION=$(node -p "require('$ROOT/packages/daemon/package.json').version" 2>/dev/null || echo "unknown")
-WEB_NAME=$(node -p "require('$ROOT/packages/web/package.json').name" 2>/dev/null || echo "@foreman/web")
-WEB_VERSION=$(node -p "require('$ROOT/packages/web/package.json').version" 2>/dev/null || echo "unknown")
+VERSION=$(grep '^VERSION=' "$ROOT/VERSION.txt" | cut -d= -f2)
 
 echo ""
-echo "  Meshtastic Foreman"
-echo "  API      $API_NAME v$API_VERSION"
-echo "  Frontend $WEB_NAME v$WEB_VERSION"
+echo "  Meshtastic Foreman v$VERSION"
 echo ""
 
 # Launch a script in a new terminal window.

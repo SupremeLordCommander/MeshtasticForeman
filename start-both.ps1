@@ -1,11 +1,8 @@
-$root       = Split-Path -Parent $MyInvocation.MyCommand.Path
-$apiPkg     = Get-Content "$root\packages\daemon\package.json" | ConvertFrom-Json
-$webPkg     = Get-Content "$root\packages\web\package.json"    | ConvertFrom-Json
+$root    = Split-Path -Parent $MyInvocation.MyCommand.Path
+$version = (Get-Content "$root\VERSION.txt" | Where-Object { $_ -match '^VERSION=' }) -replace '^VERSION=', ''
 
 Write-Host ""
-Write-Host "  Meshtastic Foreman" -ForegroundColor Cyan
-Write-Host "  API      $($apiPkg.name) v$($apiPkg.version)" -ForegroundColor Gray
-Write-Host "  Frontend $($webPkg.name) v$($webPkg.version)" -ForegroundColor Gray
+Write-Host "  Meshtastic Foreman v$version" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  Starting API daemon..." -ForegroundColor Yellow
 
