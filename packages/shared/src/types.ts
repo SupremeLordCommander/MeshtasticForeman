@@ -6,6 +6,19 @@ export type ConnectionStatus =
   | "connected"
   | "error";
 
+export interface GpsDetail {
+  latitude: number;
+  longitude: number;
+  altitude: number | null;
+  satsInView: number | null;
+  fixType: number | null;       // 0=no fix, 2=2D, 3=3D — stored internally by firmware, never transmitted in packets
+  fixQuality: number | null;    // 0=invalid, 1=GPS, 2=DGPS — stored internally by firmware, never transmitted in packets
+  pdop: number | null;          // position dilution of precision (raw × 100, so 120 = 1.20) — sent by default
+  hdop: number | null;          // horizontal dilution of precision — only sent if HVDOP position flag enabled on device
+  locationSource: number | null; // 0=unset, 1=manual, 2=internal, 3=external
+  gpsTimestamp: string | null;  // ISO timestamp from GPS fix
+}
+
 export interface DeviceInfo {
   id: string;
   name: string;
@@ -16,6 +29,9 @@ export interface DeviceInfo {
   hardwareModel: string | null;
   firmwareVersion: string | null;
   batteryLevel: number | null;  // 0–100, null if unknown or plugged in without reporting
+  hasGpsPosition: boolean;      // true once device has sent a valid GPS fix this session
+  gpsDetail: GpsDetail | null;  // latest GPS fix detail, null until first fix
+  ownNodeId: number | null;     // the device's own mesh node number
 }
 
 export interface NodeInfo {

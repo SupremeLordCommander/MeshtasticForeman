@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { Buffer } from "node:buffer";
 import { fromBinary } from "@bufbuild/protobuf";
 import type { PGlite } from "@electric-sql/pglite";
-import type { ServerEvent, Message, NodeInfo, DeviceConfig, Channel } from "@foreman/shared";
+import type { ServerEvent, Message, NodeInfo, DeviceConfig, Channel, GpsDetail } from "@foreman/shared";
 import { MeshDevice, Types, Protobuf } from "@meshtastic/core";
 import { TransportNodeSerial } from "@meshtastic/transport-node-serial";
 import type { MqttGateway } from "../mqtt/gateway.js";
@@ -59,6 +59,10 @@ export class DeviceManager extends EventEmitter {
   private myNodeIds = new Map<string, number>();
   /** Most recent battery level (0–100) for each device */
   private batteryLevels = new Map<string, number>();
+  /** Devices that have sent a valid GPS fix this session */
+  private gpsAcquired = new Set<string>();
+  /** Latest GPS detail per device */
+  private gpsDetails = new Map<string, GpsDetail>();
 
   constructor(private readonly db: PGlite) {
     super();
@@ -66,6 +70,15 @@ export class DeviceManager extends EventEmitter {
 
   setMqttGateway(gateway: MqttGateway): void {
     this.mqttGateway = gateway;
+    gateway.on("gps:position", (deviceId: string, detail: GpsDetail) => {
+      this.gpsAcquired.add(deviceId);
+      this.gpsDetails.set(deviceId, detail);
+      const device = this.devices.get(deviceId);
+      // Re-emit status on every fix so the frontend GPS panel stays current
+      if (device) {
+        this._emitStatus(deviceId, device.name, device.port, "connected", device.connectedAt);
+      }
+    });
   }
 
   /** Reconnect all devices that were saved in the DB from a previous run. */
@@ -248,6 +261,15 @@ export class DeviceManager extends EventEmitter {
     await meshDevice.configure();
     console.log(`[devices] configure done ${name}`);
 
+    // Request the device's own position immediately after configure.
+    // This ensures GPS data arrives even if the device hasn't broadcast a position yet.
+    const ownNodeId = this.myNodeIds.get(id);
+    if (ownNodeId) {
+      meshDevice.requestPosition(ownNodeId).catch((err: unknown) =>
+        console.warn(`[devices] requestPosition failed for ${name}:`, err)
+      );
+    }
+
     // Send periodic heartbeats so the serial link stays alive indefinitely.
     // Without this the Meshtastic firmware stops forwarding packets to the host.
     meshDevice.setHeartbeatInterval(30_000);
@@ -274,6 +296,8 @@ export class DeviceManager extends EventEmitter {
     this.devices.delete(deviceId);
     this.myNodeIds.delete(deviceId);
     this.batteryLevels.delete(deviceId);
+    this.gpsAcquired.delete(deviceId);
+    this.gpsDetails.delete(deviceId);
     this.reconnectAttempts.delete(device.port);
     this.mqttGateway?.detachDevice(deviceId);
     await device.transport.disconnect().catch(() => {});
@@ -288,6 +312,22 @@ export class DeviceManager extends EventEmitter {
 
   getBatteryLevel(id: string): number | null {
     return this.batteryLevels.get(id) ?? null;
+  }
+
+  hasGpsPosition(id: string): boolean {
+    return this.gpsAcquired.has(id);
+  }
+
+  getGpsDetail(id: string): GpsDetail | null {
+    return this.gpsDetails.get(id) ?? null;
+  }
+
+  /** Re-emit current cached GPS position to all WS clients immediately. */
+  refreshGpsPosition(deviceId: string): void {
+    const device = this.devices.get(deviceId);
+    if (device) {
+      this._emitStatus(deviceId, device.name, device.port, "connected", device.connectedAt);
+    }
   }
 
   getMyNodeId(deviceId: string): number | undefined {
@@ -457,6 +497,9 @@ export class DeviceManager extends EventEmitter {
         hardwareModel: null,
         firmwareVersion: null,
         batteryLevel: this.batteryLevels.get(id) ?? null,
+        hasGpsPosition: this.gpsAcquired.has(id),
+        gpsDetail: this.gpsDetails.get(id) ?? null,
+        ownNodeId: this.myNodeIds.get(id) ?? null,
       },
     };
     this.emit("event", event);
@@ -1036,6 +1079,9 @@ export class DeviceManager extends EventEmitter {
           hardwareModel: hwModel,
           firmwareVersion: firmware,
           batteryLevel: this.batteryLevels.get(deviceId) ?? null,
+          hasGpsPosition: this.gpsAcquired.has(deviceId),
+          gpsDetail: this.gpsDetails.get(deviceId) ?? null,
+          ownNodeId: this.myNodeIds.get(deviceId) ?? null,
         },
       };
       this.emit("event", event);
@@ -1085,6 +1131,9 @@ export class DeviceManager extends EventEmitter {
         hardwareModel: row?.hw_model ?? null,
         firmwareVersion: row?.firmware ?? null,
         batteryLevel,
+        hasGpsPosition: this.gpsAcquired.has(deviceId),
+        gpsDetail: this.gpsDetails.get(deviceId) ?? null,
+        ownNodeId: this.myNodeIds.get(deviceId) ?? null,
       },
     };
     this.emit("event", event);

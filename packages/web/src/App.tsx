@@ -116,6 +116,9 @@ export function App() {
   const [deviceConfigs, setDeviceConfigs] = useState<Map<string, DeviceConfig>>(new Map());
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const [gpsOpen, setGpsOpen] = useState(false);
+  const gpsRef = useRef<HTMLDivElement>(null);
+  const [gpsPending, setGpsPending] = useState<Set<string>>(new Set());
   const [messageTarget, setMessageTarget] = useState<number | null>(null);
 
   // ── Map filters ────────────────────────────────────────────────────────────
@@ -144,6 +147,18 @@ export function App() {
     return () => document.removeEventListener("mousedown", handler);
   }, [menuOpen]);
 
+  // Close GPS panel on outside click
+  useEffect(() => {
+    if (!gpsOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (gpsRef.current && !gpsRef.current.contains(e.target as Node)) {
+        setGpsOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [gpsOpen]);
+
   const loadOverrides = useCallback(async () => {
     try {
       const res = await fetch("/api/node-overrides");
@@ -161,8 +176,8 @@ export function App() {
 
   useEffect(() => {
     foremanClient.connect();
-    setConnected(true);
 
+    const offConn = foremanClient.onConnection((isConnected) => setConnected(isConnected));
     const off = foremanClient.on((event) => {
       if (event.type === "device:list") {
         setDevices(event.payload);
@@ -173,6 +188,9 @@ export function App() {
           if (exists) return prev.map((d) => (d.id === event.payload.id ? event.payload : d));
           return [...prev, event.payload];
         });
+        if (event.payload.gpsDetail) {
+          setGpsPending((prev) => { const next = new Set(prev); next.delete(event.payload.id); return next; });
+        }
       }
       if (event.type === "node:list") {
         setNodes((prev) => {
@@ -230,10 +248,14 @@ export function App() {
       if (event.type === "device:config") {
         setDeviceConfigs((prev) => new Map(prev).set(event.payload.deviceId, event.payload));
       }
+      if (event.type === "error") {
+        console.error(`[ws] server error ${event.payload.code}: ${event.payload.message}`);
+      }
     });
 
     return () => {
       off();
+      offConn();
       foremanClient.disconnect();
       setConnected(false);
     };
@@ -285,10 +307,116 @@ export function App() {
           <button style={tabStyle(tab === "messages")} onClick={() => setTab("messages")}>Messages</button>
         </nav>
 
+        {/* ── GPS panel ─────────────────────────────────────────────────────── */}
+        {(() => {
+          const hasAnyGps = devices.some((d) => d.status === "connected" && d.hasGpsPosition);
+          const gpsColor = hasAnyGps ? "#22c55e" : "#ef4444";
+          return (
+            <div ref={gpsRef} style={{ position: "relative", flexShrink: 0, marginLeft: "auto" }}>
+              <button onClick={() => setGpsOpen((v) => !v)} style={menuBtnStyle(gpsOpen, hasAnyGps)}>
+                <span style={{ color: gpsColor, fontSize: "0.65rem" }}>●</span>
+                GPS
+                <span style={{ color: "#475569", marginLeft: "0.3rem", fontSize: "0.65rem" }}>▾</span>
+              </button>
+
+              {gpsOpen && (
+                <div style={{ ...styles.menuPanel, minWidth: "300px" }}>
+                <style>{`@keyframes _spin { to { transform: rotate(360deg); } }`}</style>
+                  {devices.filter((d) => d.status === "connected").length === 0 ? (
+                    <div style={styles.menuSection}>
+                      <span style={{ color: "#475569", fontSize: "0.72rem" }}>No connected devices</span>
+                    </div>
+                  ) : (
+                    devices.filter((d) => d.status === "connected").map((d) => (
+                      <div key={d.id}>
+                        <div style={styles.menuSection}>
+                          <span style={styles.menuSectionLabel}>{d.port}</span>
+                          {d.gpsDetail ? (
+                            <table style={{ width: "100%", fontSize: "0.75rem", borderCollapse: "collapse" }}>
+                              <tbody>
+                                {[
+                                  ["Latitude",  d.gpsDetail.latitude.toFixed(6)],
+                                  ["Longitude", d.gpsDetail.longitude.toFixed(6)],
+                                  ["Altitude",  d.gpsDetail.altitude != null ? `${d.gpsDetail.altitude} m` : "—"],
+                                  ["Sats in view", d.gpsDetail.satsInView ?? "—"],
+                                  ["PDOP",      d.gpsDetail.pdop != null ? (d.gpsDetail.pdop / 100).toFixed(2) : "—"],
+                                  ["HDOP",      d.gpsDetail.hdop != null ? (d.gpsDetail.hdop / 100).toFixed(2) : "— (enable HVDOP flag)"],
+                                  ["Source",    d.gpsDetail.locationSource != null ? (["Unset","Manual","Internal","External"][d.gpsDetail.locationSource] ?? d.gpsDetail.locationSource) : "—"],
+                                  ["GPS time",  d.gpsDetail.gpsTimestamp ? new Date(d.gpsDetail.gpsTimestamp).toLocaleTimeString() : "—"],
+                                ].map(([label, value]) => (
+                                  <tr key={String(label)}>
+                                    <td style={{ color: "#475569", paddingRight: "0.75rem", paddingBottom: "0.15rem" }}>{label}</td>
+                                    <td style={{ color: "#e2e8f0", fontFamily: "monospace" }}>{String(value)}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          ) : (
+                            <span style={{ color: "#475569", fontSize: "0.75rem" }}>Waiting for GPS fix…</span>
+                          )}
+                          {d.ownNodeId != null && (() => {
+                            const pending = gpsPending.has(d.id);
+                            return (
+                              <button
+                                style={{
+                                  background: "#1e293b",
+                                  border: "1px solid #334155",
+                                  color: "#94a3b8",
+                                  padding: "0.2rem 0.6rem",
+                                  borderRadius: "0.25rem",
+                                  cursor: pending ? "default" : "pointer",
+                                  fontFamily: "monospace",
+                                  fontSize: "0.75rem",
+                                  marginTop: "0.5rem",
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: "0.35rem",
+                                  opacity: pending ? 0.7 : 1,
+                                }}
+                                disabled={pending}
+                                onClick={() => {
+                                  console.log(`[gps] requesting position for device ${d.id} nodeId=${d.ownNodeId}`);
+                                  setGpsPending((prev) => new Set(prev).add(d.id));
+                                  foremanClient.send({ type: "node:request-position", payload: { deviceId: d.id, nodeId: d.ownNodeId! } });
+                                  setTimeout(() => setGpsPending((prev) => { const next = new Set(prev); next.delete(d.id); return next; }), 15000);
+                                }}
+                              >
+                                {pending && (
+                                  <span style={{
+                                    display: "inline-block",
+                                    width: "0.7rem",
+                                    height: "0.7rem",
+                                    border: "2px solid #475569",
+                                    borderTopColor: "#94a3b8",
+                                    borderRadius: "50%",
+                                    animation: "_spin 0.7s linear infinite",
+                                  }} />
+                                )}
+                                {pending ? "Refreshing…" : "Refresh GPS"}
+                              </button>
+                            );
+                          })()}
+                          {d.ownNodeId == null && (
+                            <span style={{ color: "#475569", fontSize: "0.7rem", marginTop: "0.4rem", display: "block" }}>
+                              Node ID not yet known — reconnect to enable position request
+                            </span>
+                          )}
+                        </div>
+                        <div style={styles.menuDivider} />
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
         {/* ── System menu ───────────────────────────────────────────────────── */}
         <div ref={menuRef} style={styles.menuContainer}>
           <button onClick={() => setMenuOpen((v) => !v)} style={menuBtnStyle(menuOpen, connected)}>
-            Settings
+            <span style={{ color: connected ? "#22c55e" : "#ef4444", fontSize: "0.65rem" }}>●</span>
+            API
             <span style={{ color: "#475569", marginLeft: "0.3rem", fontSize: "0.65rem" }}>▾</span>
           </button>
 
@@ -669,7 +797,6 @@ const styles: Record<string, React.CSSProperties> = {
   },
   menuContainer: {
     position: "relative",
-    marginLeft: "auto",
     flexShrink: 0,
   },
   menuPanel: {
