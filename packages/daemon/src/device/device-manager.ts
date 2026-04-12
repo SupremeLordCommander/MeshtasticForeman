@@ -8,21 +8,7 @@ import { MeshDevice, Types, Protobuf } from "@meshtastic/core";
 import { TransportNodeSerial } from "@meshtastic/transport-node-serial";
 import type { MqttGateway } from "../mqtt/gateway.js";
 import { activityLog } from "../activity/log.js";
-
-/**
- * Converts a protobuf object to a plain JSON-serialisable value.
- * Handles BigInt → number and Uint8Array → base64 string, both of which
- * appear in Meshtastic protobuf messages.
- */
-function toPlainObject(obj: unknown): unknown {
-  return JSON.parse(
-    JSON.stringify(obj, (_, v) => {
-      if (typeof v === "bigint") return Number(v);
-      if (v instanceof Uint8Array) return Buffer.from(v).toString("base64");
-      return v;
-    })
-  );
-}
+import { toPlainObject, decodePayload } from "../decode-payload.js";
 
 export interface ConnectedDevice {
   id: string;
@@ -629,8 +615,11 @@ export class DeviceManager extends EventEmitter {
       : new Date().toISOString();
 
     let payloadRaw: string | null = null;
+    let decodedJson: unknown = null;
     if (isDecoded && p.payloadVariant.value.payload instanceof Uint8Array) {
-      payloadRaw = Buffer.from(p.payloadVariant.value.payload).toString("base64");
+      const payloadBytes: Uint8Array = p.payloadVariant.value.payload;
+      payloadRaw  = Buffer.from(payloadBytes).toString("base64");
+      decodedJson = decodePayload(portnumName, payloadBytes);
     } else if (isEncrypted && p.payloadVariant.value instanceof Uint8Array) {
       payloadRaw = Buffer.from(p.payloadVariant.value).toString("base64");
     }
@@ -692,8 +681,8 @@ export class DeviceManager extends EventEmitter {
     await this.db.query(
       `INSERT INTO packets(id, packet_id, device_id, from_node_id, to_node_id, channel,
          portnum, portnum_name, rx_time, rx_snr, rx_rssi, hop_limit, hop_start,
-         want_ack, via_mqtt, payload_raw)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+         want_ack, via_mqtt, payload_raw, decoded_json)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb)`,
       [
         id,
         p.id ?? 0,
@@ -711,6 +700,7 @@ export class DeviceManager extends EventEmitter {
         p.wantAck ?? false,
         p.viaMqtt ?? false,
         payloadRaw,
+        decodedJson !== null ? JSON.stringify(decodedJson) : null,
       ]
     );
 
@@ -902,7 +892,10 @@ export class DeviceManager extends EventEmitter {
     const lon = pos.longitudeI != null ? pos.longitudeI / 1e7 : null;
     if (lat === null || lon === null || (lat === 0 && lon === 0)) return;
 
-    const alt = pos.altitude ?? null;
+    const alt          = pos.altitude     ?? null;
+    const speed        = pos.groundSpeed  != null ? pos.groundSpeed  / 100 : null; // cm/s → m/s
+    const groundTrack  = pos.groundTrack  ?? null;
+    const satsInView   = pos.satsInView   ?? null;
     const rxTime = pkt.rxTime instanceof Date
       ? pkt.rxTime.toISOString()
       : new Date().toISOString();
@@ -911,6 +904,14 @@ export class DeviceManager extends EventEmitter {
       `UPDATE nodes SET latitude = $1, longitude = $2, altitude = $3, last_heard = GREATEST(last_heard, $4)
        WHERE device_id = $5 AND node_id = $6`,
       [lat, lon, alt, rxTime, deviceId, fromNodeId]
+    );
+
+    // Record every fix so we can show position trails in analytics
+    await this.db.query(
+      `INSERT INTO position_history(id, device_id, node_id, latitude, longitude, altitude,
+         speed, ground_track, sats_in_view, recorded_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      [randomUUID(), deviceId, fromNodeId, lat, lon, alt, speed, groundTrack, satsInView, rxTime]
     );
 
     // Emit update so frontend map refreshes immediately
