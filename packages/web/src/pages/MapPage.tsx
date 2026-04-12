@@ -161,11 +161,12 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
 
   // Re-fetch when a new traceroute result arrives via WebSocket
   useEffect(() => {
-    return foremanClient.on((event) => {
+    const off = foremanClient.on((event) => {
       if (event.type === "traceroute:result") {
         fetchTraceroutes();
       }
     });
+    return () => { off(); };
   }, [fetchTraceroutes]);
 
   // Build nodeId → [lon, lat] lookup from all known nodes

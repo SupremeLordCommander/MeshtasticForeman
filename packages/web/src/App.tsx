@@ -8,13 +8,14 @@ import { ActivityPage } from "./pages/ActivityPage.js";
 import { LogsPage } from "./pages/LogsPage.js";
 import { DeviceConfigPage } from "./pages/DeviceConfigPage.js";
 import { MessagesPage } from "./pages/MessagesPage.js";
+import { AnalyticsPage } from "./pages/AnalyticsPage.js";
 import { initMessageStore } from "./store/messages.js";
 import logo from "./assets/logo.png";
 
 // Initialize message store once at module load
 initMessageStore();
 
-type Tab = "nodes" | "map" | "messages" | "activity" | "logs" | "overrides" | "config";
+type Tab = "nodes" | "map" | "messages" | "activity" | "logs" | "overrides" | "config" | "analytics";
 type ActivityWindow = "5m" | "15m" | "1h" | "all";
 type ActivitySource = "all" | "mesh" | "mqtt";
 type LogsLevel = "all" | "log" | "warn" | "error";
@@ -305,6 +306,7 @@ export function App() {
           <button style={tabStyle(tab === "nodes")} onClick={() => setTab("nodes")}>Nodes</button>
           <button style={tabStyle(tab === "map")} onClick={() => setTab("map")}>Map</button>
           <button style={tabStyle(tab === "messages")} onClick={() => setTab("messages")}>Messages</button>
+          <button style={tabStyle(tab === "analytics")} onClick={() => setTab("analytics")}>Analytics</button>
         </nav>
 
         {/* ── GPS panel ─────────────────────────────────────────────────────── */}
@@ -666,6 +668,11 @@ export function App() {
       {tab === "config" && (
         <div style={{ flex: 1, overflowY: "auto" }}>
           <DeviceConfigPage devices={devices} configs={deviceConfigs} />
+        </div>
+      )}
+      {tab === "analytics" && (
+        <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+          <AnalyticsPage nodes={effectiveNodes} mqttNodes={effectiveMqttNodes} />
         </div>
       )}
     </div>
