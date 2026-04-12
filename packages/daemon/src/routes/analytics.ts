@@ -586,6 +586,384 @@ export async function registerAnalyticsRoutes(
       totalSamples: values.length,
     };
   });
+
+  // ── 11. Telemetry History ───────────────────────────────────────────────────
+  // Returns time-bucketed telemetry readings per node from TELEMETRY_APP packets.
+  // Covers device metrics (battery, channel util, airtime) and environment
+  // metrics (temperature, humidity, pressure) in one query.
+  //
+  // Query params:
+  //   since    – default "24h"
+  //   nodeId   – filter to one node
+  //   deviceId – filter to one device
+  app.get("/api/analytics/telemetry-history", async (req, reply) => {
+    const { since = "24h", nodeId, deviceId } = req.query as {
+      since?: string;
+      nodeId?: string;
+      deviceId?: string;
+    };
+
+    const conditions: string[] = [
+      "portnum_name = 'TELEMETRY_APP'",
+      "decoded_json IS NOT NULL",
+    ];
+    const params: unknown[] = [];
+
+    const sinceDate = parseSince(since);
+    if (sinceDate) {
+      params.push(sinceDate.toISOString());
+      conditions.push(`rx_time >= $${params.length}`);
+    }
+    if (deviceId) {
+      params.push(deviceId);
+      conditions.push(`device_id = $${params.length}`);
+    }
+    if (nodeId) {
+      const nid = Number(nodeId);
+      if (!Number.isFinite(nid)) return reply.status(400).send({ error: "Invalid nodeId" });
+      params.push(nid);
+      conditions.push(`from_node_id = $${params.length}`);
+    }
+
+    const where = `WHERE ${conditions.join(" AND ")}`;
+
+    // 5-minute buckets; extract fields from decoded_json by telemetry variant
+    const { rows } = await db.query<{
+      ts: string;
+      node_id: string;
+      variant_case: string | null;
+      // Device metrics
+      battery_level:       number | null;
+      voltage:             number | null;
+      channel_utilization: number | null;
+      air_util_tx:         number | null;
+      uptime_seconds:      number | null;
+      // Environment metrics
+      temperature:          number | null;
+      relative_humidity:    number | null;
+      barometric_pressure:  number | null;
+    }>(`
+      SELECT
+        to_timestamp(floor(EXTRACT(epoch FROM rx_time) / 300) * 300)          AS ts,
+        from_node_id                                                            AS node_id,
+        decoded_json -> 'variant' ->> 'case'                                   AS variant_case,
+        -- device metrics (cast text → numeric; field may be absent → null)
+        (decoded_json -> 'variant' -> 'value' ->> 'batteryLevel')::numeric     AS battery_level,
+        (decoded_json -> 'variant' -> 'value' ->> 'voltage')::numeric          AS voltage,
+        (decoded_json -> 'variant' -> 'value' ->> 'channelUtilization')::numeric AS channel_utilization,
+        (decoded_json -> 'variant' -> 'value' ->> 'airUtilTx')::numeric        AS air_util_tx,
+        (decoded_json -> 'variant' -> 'value' ->> 'uptimeSeconds')::numeric    AS uptime_seconds,
+        -- environment metrics
+        (decoded_json -> 'variant' -> 'value' ->> 'temperature')::numeric      AS temperature,
+        (decoded_json -> 'variant' -> 'value' ->> 'relativeHumidity')::numeric AS relative_humidity,
+        (decoded_json -> 'variant' -> 'value' ->> 'barometricPressure')::numeric AS barometric_pressure
+      FROM packets
+      ${where}
+      ORDER BY ts ASC, from_node_id ASC
+    `, params);
+
+    // Group by bucket + node and average each metric within the bucket
+    type Bucket = {
+      ts: string;
+      nodeId: number;
+      variantCase: string | null;
+      batteryLevel: number | null;
+      voltage: number | null;
+      channelUtilization: number | null;
+      airUtilTx: number | null;
+      uptimeSeconds: number | null;
+      temperature: number | null;
+      relativeHumidity: number | null;
+      barometricPressure: number | null;
+    };
+
+    const bucketMap = new Map<string, { sums: Record<string, number>; counts: Record<string, number>; variantCase: string | null; ts: string; nodeId: number }>();
+
+    const numFields = ["batteryLevel","voltage","channelUtilization","airUtilTx","uptimeSeconds","temperature","relativeHumidity","barometricPressure"] as const;
+    const dbFields:  Record<string, string> = {
+      batteryLevel: "battery_level", voltage: "voltage",
+      channelUtilization: "channel_utilization", airUtilTx: "air_util_tx",
+      uptimeSeconds: "uptime_seconds", temperature: "temperature",
+      relativeHumidity: "relative_humidity", barometricPressure: "barometric_pressure",
+    };
+
+    for (const r of rows) {
+      const key = `${r.ts}_${r.node_id}`;
+      if (!bucketMap.has(key)) {
+        bucketMap.set(key, { sums: {}, counts: {}, variantCase: r.variant_case, ts: new Date(r.ts).toISOString(), nodeId: Number(r.node_id) });
+      }
+      const b = bucketMap.get(key)!;
+      for (const f of numFields) {
+        const val = r[dbFields[f] as keyof typeof r] as number | null;
+        if (val !== null && val !== undefined) {
+          b.sums[f]   = (b.sums[f]   ?? 0) + Number(val);
+          b.counts[f] = (b.counts[f] ?? 0) + 1;
+        }
+      }
+    }
+
+    const result: Bucket[] = [...bucketMap.values()].map((b) => {
+      const avg = (f: string) => b.counts[f] ? b.sums[f] / b.counts[f] : null;
+      return {
+        ts:                 b.ts,
+        nodeId:             b.nodeId,
+        variantCase:        b.variantCase,
+        batteryLevel:       avg("batteryLevel"),
+        voltage:            avg("voltage"),
+        channelUtilization: avg("channelUtilization"),
+        airUtilTx:          avg("airUtilTx"),
+        uptimeSeconds:      avg("uptimeSeconds"),
+        temperature:        avg("temperature"),
+        relativeHumidity:   avg("relativeHumidity"),
+        barometricPressure: avg("barometricPressure"),
+      };
+    });
+
+    return result;
+  });
+
+  // ── 12. Link Quality Matrix ─────────────────────────────────────────────────
+  // Returns average SNR for every node-pair that has exchanged messages.
+  // Drives the heatmap: rows/cols = nodes, cell = mean SNR.
+  //
+  // Query params:
+  //   since    – default "7d"
+  //   deviceId – filter to one device
+  app.get("/api/analytics/link-quality", async (req, reply) => {
+    const { since = "7d", deviceId } = req.query as {
+      since?: string;
+      deviceId?: string;
+    };
+
+    const { where, params } = buildFilters({ since, deviceId });
+
+    const { rows } = await db.query<{
+      from_node_id: string;
+      to_node_id:   string;
+      avg_snr:      number | null;
+      message_count: string;
+    }>(`
+      SELECT
+        from_node_id,
+        to_node_id,
+        AVG(rx_snr)::REAL  AS avg_snr,
+        COUNT(*)           AS message_count
+      FROM messages
+      ${where ? where + " AND rx_snr IS NOT NULL" : "WHERE rx_snr IS NOT NULL"}
+      GROUP BY from_node_id, to_node_id
+      ORDER BY message_count DESC
+      LIMIT 2500
+    `, params);
+
+    return rows.map((r) => ({
+      fromNodeId:   Number(r.from_node_id),
+      toNodeId:     Number(r.to_node_id),
+      avgSnr:       r.avg_snr ?? null,
+      messageCount: Number(r.message_count),
+    }));
+  });
+
+  // ── 13. Node Activity Timeline ──────────────────────────────────────────────
+  // Returns the time range of activity for each node (first/last seen per
+  // time bucket), used to render a Gantt-style activity chart.
+  //
+  // Query params:
+  //   since    – default "7d"
+  //   bucket   – "hour" | "day" (default "hour")
+  //   deviceId – filter to one device
+  app.get("/api/analytics/node-activity", async (req, reply) => {
+    const { since = "7d", bucket = "hour", deviceId } = req.query as {
+      since?: string;
+      bucket?: string;
+      deviceId?: string;
+    };
+
+    if (bucket !== "hour" && bucket !== "day") {
+      return reply.status(400).send({ error: "bucket must be 'hour' or 'day'" });
+    }
+
+    const { where, params } = buildFilters({ since, deviceId });
+
+    // Count packets per node per time bucket (union messages + packets tables)
+    const { rows } = await db.query<{
+      ts: string;
+      node_id: string;
+      count: string;
+    }>(`
+      SELECT
+        date_trunc('${bucket}', rx_time) AS ts,
+        from_node_id                      AS node_id,
+        COUNT(*)                          AS count
+      FROM messages
+      ${where}
+      GROUP BY 1, 2
+      UNION ALL
+      SELECT
+        date_trunc('${bucket}', rx_time) AS ts,
+        from_node_id                      AS node_id,
+        COUNT(*)                          AS count
+      FROM packets
+      ${where}
+      GROUP BY 1, 2
+    `, params);
+
+    // Merge the two counts for the same ts+node
+    const merged = new Map<string, { ts: string; nodeId: number; count: number }>();
+    for (const r of rows) {
+      const key = `${r.ts}_${r.node_id}`;
+      const existing = merged.get(key);
+      if (existing) {
+        existing.count += Number(r.count);
+      } else {
+        merged.set(key, { ts: new Date(r.ts).toISOString(), nodeId: Number(r.node_id), count: Number(r.count) });
+      }
+    }
+
+    return [...merged.values()].sort((a, b) => a.ts.localeCompare(b.ts) || a.nodeId - b.nodeId);
+  });
+
+  // ── 14. Neighbor Graph ──────────────────────────────────────────────────────
+  // Returns the most recent neighbor list per node, extracted from
+  // NEIGHBORINFO_APP decoded_json.  Drives the SNR-coloured network graph.
+  //
+  // Query params:
+  //   since    – default "24h" (use "all" to include all historic data)
+  //   deviceId – filter to one device
+  app.get("/api/analytics/neighbor-graph", async (req, reply) => {
+    const { since = "24h", deviceId } = req.query as {
+      since?: string;
+      deviceId?: string;
+    };
+
+    const conditions: string[] = [
+      "portnum_name = 'NEIGHBORINFO_APP'",
+      "decoded_json IS NOT NULL",
+    ];
+    const params: unknown[] = [];
+
+    const sinceDate = parseSince(since);
+    if (sinceDate) {
+      params.push(sinceDate.toISOString());
+      conditions.push(`rx_time >= $${params.length}`);
+    }
+    if (deviceId) {
+      params.push(deviceId);
+      conditions.push(`device_id = $${params.length}`);
+    }
+
+    const where = `WHERE ${conditions.join(" AND ")}`;
+
+    // Most recent NEIGHBORINFO packet per reporting node
+    const { rows } = await db.query<{
+      from_node_id: string;
+      decoded_json: {
+        nodeId?: number;
+        neighbors?: { nodeId: number; snr?: number }[];
+      };
+      rx_time: string;
+    }>(`
+      SELECT DISTINCT ON (from_node_id)
+        from_node_id,
+        decoded_json,
+        rx_time
+      FROM packets
+      ${where}
+      ORDER BY from_node_id, rx_time DESC
+    `, params);
+
+    // Flatten into a list of directed links (one per neighbour relationship)
+    const links: { fromNodeId: number; toNodeId: number; snr: number | null; lastSeen: string }[] = [];
+
+    for (const row of rows) {
+      const fromNodeId = Number(row.from_node_id);
+      const neighbors  = row.decoded_json?.neighbors ?? [];
+      for (const nb of neighbors) {
+        if (!nb.nodeId || nb.nodeId === fromNodeId) continue;
+        links.push({
+          fromNodeId,
+          toNodeId: nb.nodeId,
+          snr:      nb.snr ?? null,
+          lastSeen: row.rx_time,
+        });
+      }
+    }
+
+    return links;
+  });
+
+  // ── 15. Position History ────────────────────────────────────────────────────
+  // Returns recorded GPS fixes from position_history, optionally filtered by
+  // node and time range.  Used to render movement trails on the map and a
+  // sortable table of all fixes.
+  //
+  // Query params:
+  //   since    – default "24h" (shorthand or ISO)
+  //   nodeId   – filter to one specific node (numeric)
+  //   deviceId – filter to one device
+  //   limit    – max rows to return (default 2000, max 10000)
+  app.get("/api/analytics/position-history", async (req, reply) => {
+    const { since = "24h", nodeId, deviceId, limit: limitStr } = req.query as {
+      since?: string;
+      nodeId?: string;
+      deviceId?: string;
+      limit?: string;
+    };
+
+    const limit = Math.min(10_000, Math.max(1, parseInt(limitStr ?? "2000", 10) || 2000));
+
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+
+    const sinceDate = parseSince(since);
+    if (sinceDate) {
+      params.push(sinceDate.toISOString());
+      conditions.push(`recorded_at >= $${params.length}`);
+    }
+    if (deviceId) {
+      params.push(deviceId);
+      conditions.push(`device_id = $${params.length}`);
+    }
+    if (nodeId) {
+      const nid = Number(nodeId);
+      if (!Number.isFinite(nid)) return reply.status(400).send({ error: "Invalid nodeId" });
+      params.push(nid);
+      conditions.push(`node_id = $${params.length}`);
+    }
+
+    params.push(limit);
+    const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+
+    const { rows } = await db.query<{
+      id:           string;
+      node_id:      string;
+      latitude:     number;
+      longitude:    number;
+      altitude:     number | null;
+      speed:        number | null;
+      ground_track: number | null;
+      sats_in_view: number | null;
+      recorded_at:  string;
+    }>(`
+      SELECT id, node_id, latitude, longitude, altitude,
+             speed, ground_track, sats_in_view, recorded_at
+      FROM position_history
+      ${where}
+      ORDER BY recorded_at DESC
+      LIMIT $${params.length}
+    `, params);
+
+    return rows.map((r) => ({
+      id:          r.id,
+      nodeId:      Number(r.node_id),
+      latitude:    r.latitude,
+      longitude:   r.longitude,
+      altitude:    r.altitude,
+      speed:       r.speed,
+      groundTrack: r.ground_track,
+      satsInView:  r.sats_in_view,
+      recordedAt:  r.recorded_at,
+    }));
+  });
 }
 
 // ---------------------------------------------------------------------------

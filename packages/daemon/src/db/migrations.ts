@@ -208,6 +208,28 @@ const migrations: string[] = [
   CREATE INDEX IF NOT EXISTS traceroutes_device_time ON traceroutes(device_id, recorded_at DESC);
   CREATE INDEX IF NOT EXISTS traceroutes_to_node     ON traceroutes(device_id, to_node_id, recorded_at DESC);
   `,
+
+  /* 012 – position_history: every GPS fix broadcast by any node.
+            Records each POSITION_APP packet so we can replay node movement
+            over time and plot trails on the map.
+            speed is in m/s, ground_track is degrees (0–360), sats_in_view is
+            the number of visible GNSS satellites at fix time (quality signal). */
+  `
+  CREATE TABLE IF NOT EXISTS position_history (
+    id           TEXT PRIMARY KEY,
+    device_id    TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    node_id      BIGINT NOT NULL,
+    latitude     DOUBLE PRECISION NOT NULL,
+    longitude    DOUBLE PRECISION NOT NULL,
+    altitude     INT,
+    speed        REAL,
+    ground_track REAL,
+    sats_in_view INT,
+    recorded_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+  CREATE INDEX IF NOT EXISTS position_history_node_time   ON position_history(node_id, recorded_at DESC);
+  CREATE INDEX IF NOT EXISTS position_history_device_time ON position_history(device_id, recorded_at DESC);
+  `,
 ];
 
 export async function runMigrations(db: PGlite) {
