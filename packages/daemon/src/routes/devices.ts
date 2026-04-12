@@ -118,4 +118,48 @@ export async function registerDeviceRoutes(
     await db.query("DELETE FROM node_overrides WHERE node_id = $1", [nodeId]);
     return reply.status(204).send();
   });
+
+  // ---------------------------------------------------------------------------
+  // Traceroutes — persisted route discovery results
+  // ---------------------------------------------------------------------------
+
+  app.get("/api/traceroutes", async (req, reply) => {
+    if (!db) return reply.status(503).send({ error: "DB not available" });
+    const { since, deviceId: filterDevice } = req.query as { since?: string; deviceId?: string };
+
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+
+    if (since) {
+      const ts = new Date(since);
+      if (isNaN(ts.getTime())) return reply.status(400).send({ error: "Invalid 'since' date" });
+      params.push(ts.toISOString());
+      conditions.push(`recorded_at >= $${params.length}`);
+    }
+    if (filterDevice) {
+      params.push(filterDevice);
+      conditions.push(`device_id = $${params.length}`);
+    }
+
+    const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+    const { rows } = await db.query<{
+      id: string; device_id: string; from_node_id: number; to_node_id: number;
+      route: number[]; route_back: number[]; recorded_at: string;
+    }>(
+      `SELECT id, device_id, from_node_id, to_node_id, route, route_back, recorded_at
+       FROM traceroutes ${where}
+       ORDER BY recorded_at DESC
+       LIMIT 500`,
+      params
+    );
+    return rows.map((r) => ({
+      id: r.id,
+      deviceId: r.device_id,
+      fromNodeId: r.from_node_id,
+      toNodeId: r.to_node_id,
+      route: r.route,
+      routeBack: r.route_back,
+      recordedAt: r.recorded_at,
+    }));
+  });
 }

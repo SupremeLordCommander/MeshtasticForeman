@@ -31,7 +31,7 @@ export type ServerEvent =
   | { type: "waypoint:list"; payload: Waypoint[] }
   | { type: "mqtt_node:update"; payload: MqttNode }
   | { type: "mqtt_node:list"; payload: MqttNode[] }
-  | { type: "traceroute:result"; payload: { nodeId: number; route: number[]; routeBack: number[] } }
+  | { type: "traceroute:result"; payload: { deviceId: string; nodeId: number; route: number[]; routeBack: number[] } }
   | { type: "node:removed"; payload: { nodeId: number } }
   | { type: "activity:entry"; payload: ActivityEntry }
   | { type: "activity:snapshot"; payload: ActivityEntry[] }

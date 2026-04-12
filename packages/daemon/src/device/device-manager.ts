@@ -201,12 +201,17 @@ export class DeviceManager extends EventEmitter {
       const route: number[]     = Array.from(pkt.data?.route     ?? []);
       const routeBack: number[] = Array.from(pkt.data?.routeBack ?? []);
       const nodeId: number = pkt.from ?? 0;
+      const fromNodeId = this.myNodeIds.get(id) ?? 0;
       const event: ServerEvent = {
         type: "traceroute:result",
-        payload: { nodeId, route, routeBack },
+        payload: { deviceId: id, nodeId, route, routeBack },
       };
       this.emit("event", event);
       console.log(`[devices] traceroute result from !${nodeId.toString(16).padStart(8,"0")} route=[${route.map((n) => "!"+n.toString(16)).join(",")}]`);
+      // Persist to DB asynchronously
+      this._saveTraceroute(id, fromNodeId, nodeId, route, routeBack).catch((err) =>
+        console.error(`[devices] traceroute save error:`, err)
+      );
     });
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -550,6 +555,21 @@ export class DeviceManager extends EventEmitter {
         this._scheduleReconnect(deviceId, port, name);
       }
     }, delayMs);
+  }
+
+  private async _saveTraceroute(
+    deviceId: string,
+    fromNodeId: number,
+    toNodeId: number,
+    route: number[],
+    routeBack: number[],
+  ) {
+    const id = randomUUID();
+    await this.db.query(
+      `INSERT INTO traceroutes(id, device_id, from_node_id, to_node_id, route, route_back)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [id, deviceId, fromNodeId, toNodeId, JSON.stringify(route), JSON.stringify(routeBack)]
+    );
   }
 
   private async _handleMessage(

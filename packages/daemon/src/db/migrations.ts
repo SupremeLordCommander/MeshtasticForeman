@@ -189,6 +189,25 @@ const migrations: string[] = [
   ALTER TABLE messages ADD COLUMN IF NOT EXISTS ack_error TEXT;
   CREATE INDEX IF NOT EXISTS messages_ack ON messages(device_id, ack_status) WHERE ack_status = 'pending';
   `,
+
+  /* 011 – traceroutes: persisted results from mesh traceroute packets.
+            from_node_id = our gateway (the device that initiated the trace).
+            to_node_id   = the destination node.
+            route        = intermediate hops on the outbound path (may be empty for direct).
+            route_back   = intermediate hops on the return path (may be empty). */
+  `
+  CREATE TABLE IF NOT EXISTS traceroutes (
+    id           TEXT PRIMARY KEY,
+    device_id    TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    from_node_id BIGINT NOT NULL,
+    to_node_id   BIGINT NOT NULL,
+    route        JSONB NOT NULL DEFAULT '[]',
+    route_back   JSONB NOT NULL DEFAULT '[]',
+    recorded_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+  CREATE INDEX IF NOT EXISTS traceroutes_device_time ON traceroutes(device_id, recorded_at DESC);
+  CREATE INDEX IF NOT EXISTS traceroutes_to_node     ON traceroutes(device_id, to_node_id, recorded_at DESC);
+  `,
 ];
 
 export async function runMigrations(db: PGlite) {

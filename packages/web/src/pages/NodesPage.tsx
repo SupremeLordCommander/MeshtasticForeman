@@ -1,6 +1,5 @@
 import { useState, useEffect, Fragment } from "react";
 import type { DeviceInfo, NodeInfo, MqttNode } from "@foreman/shared";
-import { foremanClient } from "../ws/client.js";
 import logo from "../assets/logo.png";
 import { NodeDetailPanel } from "./NodeDetailPanel.js";
 
@@ -327,11 +326,6 @@ function sortMerged(list: MergedNode[], col: SortCol, dir: "asc" | "desc", proto
 // Types
 // ---------------------------------------------------------------------------
 
-interface TracerouteResult {
-  route: number[];
-  routeBack: number[];
-}
-
 interface Props {
   devices: DeviceInfo[];
   nodes: NodeInfo[];
@@ -344,9 +338,6 @@ interface Props {
 // ---------------------------------------------------------------------------
 
 export function NodesPage({ devices, nodes, mqttNodes, onMessage }: Props) {
-  const [pending, setPending] = useState<Record<string, "position" | "traceroute" | "remove">>({});
-  const [traceroutes, setTraceroutes] = useState<Record<number, TracerouteResult>>({});
-  const [confirmRemove, setConfirmRemove] = useState<number | null>(null);
   const [filter, setFilter] = useState("");
   const [sortCol, setSortCol] = useState<SortCol>("distance");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
@@ -375,25 +366,6 @@ export function NodesPage({ devices, nodes, mqttNodes, onMessage }: Props) {
     });
   }
 
-  useEffect(() => {
-    const off = foremanClient.on((event) => {
-      if (event.type === "traceroute:result") {
-        const { nodeId, route, routeBack } = event.payload;
-        setTraceroutes((prev) => ({ ...prev, [nodeId]: { route, routeBack } }));
-        setPending((prev) => { const next = { ...prev }; delete next[String(nodeId)]; return next; });
-      }
-      if (event.type === "node:removed") {
-        const { nodeId } = event.payload;
-        setPending((prev) => { const next = { ...prev }; delete next[String(nodeId)]; return next; });
-      }
-      if (event.type === "error" && (event.payload as unknown as { nodeId?: number }).nodeId != null) {
-        const nodeId = (event.payload as unknown as { nodeId: number }).nodeId;
-        setPending((prev) => { const next = { ...prev }; delete next[String(nodeId)]; return next; });
-      }
-    });
-    return () => { off(); };
-  }, []);
-
   function handleSort(col: SortCol) {
     if (sortCol === col) {
       setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -401,29 +373,6 @@ export function NodesPage({ devices, nodes, mqttNodes, onMessage }: Props) {
       setSortCol(col);
       setSortDir(col === "name" || col === "model" || col === "id" || col === "distance" ? "asc" : "desc");
     }
-  }
-
-  const deviceId = devices.find((d) => d.status === "connected")?.id ?? null;
-
-  function requestPosition(nodeId: number) {
-    if (!deviceId) return;
-    setPending((prev) => ({ ...prev, [String(nodeId)]: "position" }));
-    foremanClient.send({ type: "node:request-position", payload: { deviceId, nodeId } });
-    setTimeout(() => setPending((prev) => { const next = { ...prev }; delete next[String(nodeId)]; return next; }), 15000);
-  }
-
-  function requestTraceroute(nodeId: number) {
-    if (!deviceId) return;
-    setPending((prev) => ({ ...prev, [String(nodeId)]: "traceroute" }));
-    foremanClient.send({ type: "node:traceroute", payload: { deviceId, nodeId } });
-  }
-
-  function removeNode(nodeId: number) {
-    if (!deviceId) return;
-    setConfirmRemove(null);
-    setPending((prev) => ({ ...prev, [String(nodeId)]: "remove" }));
-    foremanClient.send({ type: "node:remove", payload: { deviceId, nodeId } });
-    setTimeout(() => setPending((prev) => { const next = { ...prev }; delete next[String(nodeId)]; return next; }), 10000);
   }
 
   // Build, filter, sort, then section
@@ -437,22 +386,14 @@ export function NodesPage({ devices, nodes, mqttNodes, onMessage }: Props) {
   const mqttOnly = apply(filtered.filter((n) => !n.mesh && n.mqtt));
 
   const totalUnique = nodes.length + allMerged.filter((n) => !n.mesh && n.mqtt).length;
-  const colCount = deviceId ? 9 : 8;
   const isEmpty = nodes.length === 0 && mqttNodes.length === 0;
   const noResults = !isEmpty && filtered.length === 0;
 
   const sharedHeaderProps = { sortCol, sortDir, onSort: handleSort };
 
   const nodeRowProps = {
-    pending, traceroutes, confirmRemove, deviceId,
     selectedNodeId, protoMap,
     onRowClick: (id: number) => setSelectedNodeId((prev) => prev === id ? null : id),
-    onRequestPosition: requestPosition,
-    onRequestTraceroute: requestTraceroute,
-    onRemove: removeNode,
-    onConfirmRemove: setConfirmRemove,
-    onClearTraceroute: (id: number) => setTraceroutes((prev) => { const n = { ...prev }; delete n[id]; return n; }),
-    onMessage,
   };
 
   const selectedMerged = selectedNodeId != null
@@ -468,6 +409,7 @@ export function NodesPage({ devices, nodes, mqttNodes, onMessage }: Props) {
           mqtt={selectedMerged.mqtt}
           devices={devices}
           onClose={() => setSelectedNodeId(null)}
+          onMessage={onMessage}
         />
       )}
       <section style={styles.section}>
@@ -520,27 +462,26 @@ export function NodesPage({ devices, nodes, mqttNodes, onMessage }: Props) {
                   <SortableHeader col="model"      label="Model"       {...sharedHeaderProps} />
                   <SortableHeader col="distance"   label="Distance"    {...sharedHeaderProps} />
                   <SortableHeader col="location"   label="Location"    {...sharedHeaderProps} />
-                  {deviceId && <th style={styles.th}>Actions</th>}
                 </tr>
               </thead>
               <tbody>
                 {matched.length > 0 && (
                   <>
-                    <SectionHeader label="Mesh + MQTT" count={matched.length} colCount={colCount} color="#60a5fa"
+                    <SectionHeader label="Mesh + MQTT" count={matched.length} colCount={8} color="#60a5fa"
                       collapsed={!!collapsed["both"]} onToggle={() => toggleSection("both")} />
                     {!collapsed["both"] && matched.map((m) => <NodeRows key={m.nodeId} merged={m} {...nodeRowProps} />)}
                   </>
                 )}
                 {meshOnly.length > 0 && (
                   <>
-                    <SectionHeader label="Mesh only" count={meshOnly.length} colCount={colCount} color="#94a3b8"
+                    <SectionHeader label="Mesh only" count={meshOnly.length} colCount={8} color="#94a3b8"
                       collapsed={!!collapsed["mesh"]} onToggle={() => toggleSection("mesh")} />
                     {!collapsed["mesh"] && meshOnly.map((m) => <NodeRows key={m.nodeId} merged={m} {...nodeRowProps} />)}
                   </>
                 )}
                 {mqttOnly.length > 0 && (
                   <>
-                    <SectionHeader label="MQTT only" count={mqttOnly.length} colCount={colCount} color="#34d399"
+                    <SectionHeader label="MQTT only" count={mqttOnly.length} colCount={8} color="#34d399"
                       collapsed={!!collapsed["mqtt"]} onToggle={() => toggleSection("mqtt")} />
                     {!collapsed["mqtt"] && mqttOnly.map((m) => <NodeRows key={m.nodeId} merged={m} {...nodeRowProps} />)}
                   </>
@@ -630,32 +571,13 @@ function SectionHeader({ label, count, colCount, color, collapsed, onToggle }: {
 
 interface NodeRowsProps {
   merged: MergedNode;
-  pending: Record<string, "position" | "traceroute" | "remove">;
-  traceroutes: Record<number, TracerouteResult>;
-  confirmRemove: number | null;
-  deviceId: string | null;
   selectedNodeId: number | null;
   protoMap: Map<number, string>;
   onRowClick: (id: number) => void;
-  onRequestPosition: (id: number) => void;
-  onRequestTraceroute: (id: number) => void;
-  onRemove: (id: number) => void;
-  onConfirmRemove: (id: number | null) => void;
-  onClearTraceroute: (id: number) => void;
-  onMessage?: (id: number) => void;
 }
 
-function NodeRows({
-  merged, pending, traceroutes, confirmRemove, deviceId,
-  selectedNodeId, protoMap, onRowClick,
-  onRequestPosition, onRequestTraceroute, onRemove, onConfirmRemove, onClearTraceroute,
-  onMessage,
-}: NodeRowsProps) {
+function NodeRows({ merged, selectedNodeId, protoMap, onRowClick }: NodeRowsProps) {
   const { nodeId, mesh, mqtt } = merged;
-  const key = String(nodeId);
-  const isPending = !!pending[key];
-  const trResult = traceroutes[nodeId];
-  const colCount = deviceId ? 9 : 8;
   const primary = mesh ?? mqtt!;
   const isMqttOnly = !mesh;
   const isSelected = selectedNodeId === nodeId;
@@ -692,44 +614,11 @@ function NodeRows({
             ? `${primary.latitude.toFixed(5)}, ${primary.longitude.toFixed(5)}`
             : "—"}
         </td>
-        {deviceId && (
-          <td style={{ ...styles.td, whiteSpace: "nowrap" }}>
-            {!isMqttOnly && (
-              <>
-                {onMessage && (
-                  <button
-                    style={{ ...styles.actionBtn, marginRight: "0.4rem" }}
-                    onClick={(e) => { e.stopPropagation(); onMessage(nodeId); }}
-                    title="Open conversation in Messages tab"
-                  >
-                    ✉ Msg
-                  </button>
-                )}
-                <button style={styles.actionBtn} disabled={isPending} onClick={() => onRequestPosition(nodeId)} title="Ask node to broadcast its current position">
-                  {pending[key] === "position" ? "…" : "📍 Pos"}
-                </button>
-                <button style={{ ...styles.actionBtn, marginLeft: "0.4rem" }} disabled={isPending} onClick={() => onRequestTraceroute(nodeId)} title="Trace the mesh route to this node">
-                  {pending[key] === "traceroute" ? "…" : "🔍 Trace"}
-                </button>
-                {confirmRemove === nodeId ? (
-                  <>
-                    <button style={{ ...styles.actionBtn, marginLeft: "0.4rem", color: "#f87171", borderColor: "#7f1d1d" }} onClick={() => onRemove(nodeId)}>Confirm</button>
-                    <button style={{ ...styles.actionBtn, marginLeft: "0.25rem" }} onClick={() => onConfirmRemove(null)}>Cancel</button>
-                  </>
-                ) : (
-                  <button style={{ ...styles.actionBtn, marginLeft: "0.4rem" }} disabled={isPending} onClick={() => onConfirmRemove(nodeId)} title="Remove from radio nodeDB and clear local cache">
-                    {pending[key] === "remove" ? "…" : "Reset"}
-                  </button>
-                )}
-              </>
-            )}
-          </td>
-        )}
       </tr>
 
       {mesh && mqtt && (
         <tr style={{ background: "#080f1a", borderBottom: "1px solid #1e293b" }}>
-          <td colSpan={colCount} style={{ ...styles.td, paddingLeft: "2.25rem", paddingTop: "0.25rem", paddingBottom: "0.3rem", fontSize: "0.75rem", color: "#64748b" }}>
+          <td colSpan={8} style={{ ...styles.td, paddingLeft: "2.25rem", paddingTop: "0.25rem", paddingBottom: "0.3rem", fontSize: "0.75rem", color: "#64748b" }}>
             <span style={{ color: "#34d399", fontWeight: "bold", marginRight: "0.5rem" }}>↳ MQTT</span>
             {mqtt.lastGateway && <>via <span style={{ fontFamily: "monospace", color: "#94a3b8" }}>{mqtt.lastGateway}</span>{" · "}</>}
             {formatLastHeard(mqtt.lastHeard)}
@@ -740,22 +629,6 @@ function NodeRows({
                 · GPS {mqtt.latitude.toFixed(5)}, {mqtt.longitude.toFixed(5)}
               </span>
             )}
-          </td>
-        </tr>
-      )}
-
-      {trResult && (
-        <tr style={{ ...styles.tr, background: "#0f1f35" }}>
-          <td colSpan={colCount} style={{ ...styles.td, ...styles.mono, fontSize: "0.75rem", color: "#94a3b8" }}>
-            <strong style={{ color: "#60a5fa" }}>Traceroute</strong>
-            {" → "}
-            {trResult.route.length === 0 ? "Direct (no intermediate hops)" : trResult.route.map((id) => nodeHex(id)).join(" → ")}
-            {trResult.routeBack.length > 0 && (
-              <span style={{ marginLeft: "1rem", color: "#94a3b8" }}>
-                (back: {trResult.routeBack.map((id) => nodeHex(id)).join(" → ")})
-              </span>
-            )}
-            <button onClick={() => onClearTraceroute(nodeId)} style={{ marginLeft: "1rem", background: "none", border: "none", color: "#64748b", cursor: "pointer", fontSize: "0.75rem" }}>✕</button>
           </td>
         </tr>
       )}
@@ -862,15 +735,5 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: "0.65rem",
     fontWeight: "bold",
     verticalAlign: "middle",
-  },
-  actionBtn: {
-    background: "#1e293b",
-    border: "1px solid #334155",
-    color: "#94a3b8",
-    padding: "0.2rem 0.5rem",
-    borderRadius: "0.25rem",
-    cursor: "pointer",
-    fontSize: "0.75rem",
-    fontFamily: "monospace",
   },
 };

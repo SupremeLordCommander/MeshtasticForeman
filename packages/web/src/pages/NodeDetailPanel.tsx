@@ -9,6 +9,7 @@ interface Props {
   mqtt: MqttNode | null;
   devices: DeviceInfo[];
   onClose: () => void;
+  onMessage?: (nodeId: number) => void;
 }
 
 const CHANNEL_ROLES_SHORT = ["Pri", "Sec", "Sec", "Sec", "Sec", "Sec", "Sec", "Sec"];
@@ -43,7 +44,7 @@ function formatTime(iso: string) {
   return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-export function NodeDetailPanel({ nodeId, mesh, mqtt, devices, onClose }: Props) {
+export function NodeDetailPanel({ nodeId, mesh, mqtt, devices, onClose, onMessage }: Props) {
   const deviceId = devices.find((d) => d.status === "connected")?.id ?? null;
   const primary = mesh ?? mqtt!;
 
@@ -51,11 +52,12 @@ export function NodeDetailPanel({ nodeId, mesh, mqtt, devices, onClose }: Props)
   const [msgText, setMsgText] = useState("");
   const [channel, setChannel] = useState(0);
   const [sending, setSending] = useState(false);
-  const [pendingAction, setPendingAction] = useState<"position" | "traceroute" | null>(null);
+  const [pendingAction, setPendingAction] = useState<"position" | "traceroute" | "remove" | null>(null);
+  const [confirmRemove, setConfirmRemove] = useState(false);
   const [traceroute, setTraceroute] = useState<{ route: number[]; routeBack: number[] } | null>(null);
   const msgEndRef = useRef<HTMLDivElement>(null);
 
-  // Request message history and listen for traceroute results
+  // Request message history and listen for traceroute results / node removal
   useEffect(() => {
     if (deviceId) {
       loadConversation(deviceId, nodeId);
@@ -66,9 +68,12 @@ export function NodeDetailPanel({ nodeId, mesh, mqtt, devices, onClose }: Props)
         setTraceroute({ route: event.payload.route, routeBack: event.payload.routeBack });
         setPendingAction(null);
       }
+      if (event.type === "node:removed" && event.payload.nodeId === nodeId) {
+        onClose();
+      }
     });
     return () => { off(); };
-  }, [deviceId, nodeId]);
+  }, [deviceId, nodeId, onClose]);
 
   // Auto-scroll messages
   useEffect(() => {
@@ -119,6 +124,14 @@ export function NodeDetailPanel({ nodeId, mesh, mqtt, devices, onClose }: Props)
     setTraceroute(null);
     foremanClient.send({ type: "node:traceroute", payload: { deviceId, nodeId } });
     setTimeout(() => setPendingAction(null), 30000);
+  }
+
+  function removeNode() {
+    if (!deviceId) return;
+    setConfirmRemove(false);
+    setPendingAction("remove");
+    foremanClient.send({ type: "node:remove", payload: { deviceId, nodeId } });
+    setTimeout(() => setPendingAction(null), 10000);
   }
 
   const isMqttOnly = !mesh;
@@ -175,6 +188,36 @@ export function NodeDetailPanel({ nodeId, mesh, mqtt, devices, onClose }: Props)
               >
                 {pendingAction === "traceroute" ? "Tracing…" : "🔍 Traceroute"}
               </button>
+              {onMessage && (
+                <button
+                  style={actionBtnStyle(false)}
+                  onClick={() => { onClose(); onMessage(nodeId); }}
+                >
+                  ✉ Messages Tab
+                </button>
+              )}
+              {confirmRemove ? (
+                <>
+                  <button
+                    style={{ ...actionBtnStyle(false), color: "#f87171", borderColor: "#7f1d1d" }}
+                    onClick={removeNode}
+                  >
+                    Confirm Reset
+                  </button>
+                  <button style={actionBtnStyle(false)} onClick={() => setConfirmRemove(false)}>
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <button
+                  style={{ ...actionBtnStyle(pendingAction === "remove"), marginLeft: "auto" }}
+                  disabled={!!pendingAction}
+                  onClick={() => setConfirmRemove(true)}
+                  title="Remove from radio nodeDB and clear local cache"
+                >
+                  {pendingAction === "remove" ? "Removing…" : "Reset Node"}
+                </button>
+              )}
             </div>
           )}
 
