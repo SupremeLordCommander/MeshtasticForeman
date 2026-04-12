@@ -1,7 +1,8 @@
-import { useState, useCallback, useEffect } from "react";
-import Map, { Marker, Popup, NavigationControl } from "react-map-gl/maplibre";
+import { useState, useCallback, useEffect, useMemo } from "react";
+import MapGL, { Marker, Popup, NavigationControl, Source, Layer } from "react-map-gl/maplibre";
 import "maplibre-gl/dist/maplibre-gl.css";
 import type { NodeInfo, MqttNode } from "@foreman/shared";
+import { foremanClient } from "../ws/client.js";
 
 const MAP_STYLE =
   import.meta.env.VITE_MAP_STYLE ?? "https://tiles.openfreemap.org/styles/liberty";
@@ -31,6 +32,84 @@ function nodeColor(nodeId: number): string {
   return `hsl(${hue}, 70%, 55%)`;
 }
 
+// ---------------------------------------------------------------------------
+// Traceroute types
+// ---------------------------------------------------------------------------
+
+interface StoredTraceroute {
+  id: string;
+  deviceId: string;
+  fromNodeId: number;
+  toNodeId: number;
+  route: number[];
+  routeBack: number[];
+  recordedAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Age filter options
+// ---------------------------------------------------------------------------
+
+const AGE_OPTIONS: { label: string; hours: number }[] = [
+  { label: "1h",  hours: 1 },
+  { label: "6h",  hours: 6 },
+  { label: "24h", hours: 24 },
+  { label: "7d",  hours: 168 },
+  { label: "All", hours: 0 },
+];
+
+// ---------------------------------------------------------------------------
+// GeoJSON line building
+// ---------------------------------------------------------------------------
+
+type Coord = [number, number];
+
+interface Segment {
+  coords: Coord[];
+  dashed: boolean;
+  color: string;
+}
+
+/**
+ * Build map line segments for a traceroute. The full path is:
+ *   fromNodeId → route[0] → ... → route[n] → toNodeId
+ *
+ * For each consecutive pair where BOTH nodes have known GPS: solid segment.
+ * Where one or more hops are missing GPS data, we "skip" to the next known
+ * node and draw a dashed segment to indicate the gap.
+ */
+function buildSegments(
+  traceroute: StoredTraceroute,
+  posMap: Map<number, Coord>,
+): Segment[] {
+  const path = [traceroute.fromNodeId, ...traceroute.route, traceroute.toNodeId];
+  const color = nodeColor(traceroute.toNodeId);
+  const segments: Segment[] = [];
+
+  let lastKnownIdx: number | null = null;
+  let hadGap = false;
+
+  for (let i = 0; i < path.length; i++) {
+    const pos = posMap.get(path[i]);
+    if (!pos) {
+      if (lastKnownIdx !== null) hadGap = true;
+      continue;
+    }
+    if (lastKnownIdx !== null) {
+      const prevPos = posMap.get(path[lastKnownIdx])!;
+      segments.push({ coords: [prevPos, pos], dashed: hadGap, color });
+    }
+    lastKnownIdx = i;
+    hadGap = false;
+  }
+
+  return segments;
+}
+
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
+
 type SelectedNode =
   | { source: "mesh"; node: NodeInfo }
   | { source: "mqtt"; node: MqttNode };
@@ -46,6 +125,9 @@ interface Props {
 
 export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, setShowMqtt }: Props) {
   const [selected, setSelected] = useState<SelectedNode | null>(null);
+  const [traceroutes, setTraceroutes] = useState<StoredTraceroute[]>([]);
+  const [showTraceroutes, setShowTraceroutes] = useState(true);
+  const [ageHours, setAgeHours] = useState(24);
 
   // Clear popup when the relevant source is hidden
   useEffect(() => {
@@ -54,6 +136,82 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
   useEffect(() => {
     if (!showMqtt && selected?.source === "mqtt") setSelected(null);
   }, [showMqtt]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Fetch stored traceroutes from the API
+  const fetchTraceroutes = useCallback(async () => {
+    try {
+      let url = "/api/traceroutes";
+      if (ageHours > 0) {
+        const since = new Date(Date.now() - ageHours * 3600 * 1000).toISOString();
+        url += `?since=${encodeURIComponent(since)}`;
+      }
+      const res = await fetch(url);
+      if (!res.ok) return;
+      const data = await res.json() as StoredTraceroute[];
+      setTraceroutes(data);
+    } catch {
+      // ignore fetch errors (daemon may be restarting)
+    }
+  }, [ageHours]);
+
+  // Fetch on mount and whenever the age filter changes
+  useEffect(() => {
+    fetchTraceroutes();
+  }, [fetchTraceroutes]);
+
+  // Re-fetch when a new traceroute result arrives via WebSocket
+  useEffect(() => {
+    return foremanClient.on((event) => {
+      if (event.type === "traceroute:result") {
+        fetchTraceroutes();
+      }
+    });
+  }, [fetchTraceroutes]);
+
+  // Build nodeId → [lon, lat] lookup from all known nodes
+  const posMap = useMemo<Map<number, Coord>>(() => {
+    const m = new Map<number, Coord>();
+    for (const n of nodes) {
+      if (n.latitude != null && n.longitude != null) {
+        m.set(n.nodeId, [n.longitude, n.latitude]);
+      }
+    }
+    for (const n of mqttNodes) {
+      if (n.latitude != null && n.longitude != null) {
+        m.set(n.nodeId, [n.longitude, n.latitude]);
+      }
+    }
+    return m;
+  }, [nodes, mqttNodes]);
+
+  // Build GeoJSON for traceroute lines — two layers: solid and dashed
+  const { solidGeoJson, dashedGeoJson } = useMemo(() => {
+    const solidFeatures: GeoJSON.Feature[] = [];
+    const dashedFeatures: GeoJSON.Feature[] = [];
+
+    if (!showTraceroutes) return { solidGeoJson: mkFeatureCollection([]), dashedGeoJson: mkFeatureCollection([]) };
+
+    for (const tr of traceroutes) {
+      const segs = buildSegments(tr, posMap);
+      for (const seg of segs) {
+        const feature: GeoJSON.Feature<GeoJSON.LineString> = {
+          type: "Feature",
+          properties: { color: seg.color, trId: tr.id },
+          geometry: { type: "LineString", coordinates: seg.coords },
+        };
+        if (seg.dashed) {
+          dashedFeatures.push(feature);
+        } else {
+          solidFeatures.push(feature);
+        }
+      }
+    }
+
+    return {
+      solidGeoJson: mkFeatureCollection(solidFeatures),
+      dashedGeoJson: mkFeatureCollection(dashedFeatures),
+    };
+  }, [traceroutes, posMap, showTraceroutes]);
 
   const mappableMesh = nodes.filter((n) => n.latitude != null && n.longitude != null);
   const mappableMqtt = mqttNodes.filter((n) => n.latitude != null && n.longitude != null);
@@ -87,7 +245,7 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
 
   return (
     <div style={styles.wrap}>
-      <Map
+      <MapGL
         key={allMappable.length > 0 ? "has-gps" : "no-gps"}
         initialViewState={initialView}
         style={{ width: "100%", height: "100%" }}
@@ -95,6 +253,33 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
         attributionControl={false}
       >
         <NavigationControl position="top-right" />
+
+        {/* Traceroute lines — solid (all hops known) */}
+        <Source id="traceroutes-solid" type="geojson" data={solidGeoJson}>
+          <Layer
+            id="traceroutes-solid-line"
+            type="line"
+            paint={{
+              "line-color": ["get", "color"],
+              "line-width": 2,
+              "line-opacity": 0.75,
+            }}
+          />
+        </Source>
+
+        {/* Traceroute lines — dashed (some hops missing GPS) */}
+        <Source id="traceroutes-dashed" type="geojson" data={dashedGeoJson}>
+          <Layer
+            id="traceroutes-dashed-line"
+            type="line"
+            paint={{
+              "line-color": ["get", "color"],
+              "line-width": 2,
+              "line-opacity": 0.5,
+              "line-dasharray": [3, 3],
+            }}
+          />
+        </Source>
 
         {/* Mesh node markers */}
         {showMesh && mappableMesh.map((node) => {
@@ -174,7 +359,34 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
             )}
           </Popup>
         )}
-      </Map>
+      </MapGL>
+
+      {/* Age filter + traceroute toggle — top left */}
+      <div style={styles.controls}>
+        <span style={styles.controlLabel}>Routes:</span>
+        {AGE_OPTIONS.map((opt) => (
+          <button
+            key={opt.label}
+            style={ageFilterBtnStyle(ageHours === opt.hours && showTraceroutes)}
+            onClick={() => {
+              if (!showTraceroutes) setShowTraceroutes(true);
+              setAgeHours(opt.hours);
+            }}
+          >
+            {opt.label}
+          </button>
+        ))}
+        <button
+          style={ageFilterBtnStyle(!showTraceroutes)}
+          onClick={() => setShowTraceroutes((v) => !v)}
+          title="Hide all traceroute lines"
+        >
+          Off
+        </button>
+        <span style={{ color: "#64748b", fontSize: "0.7rem", marginLeft: "0.25rem" }}>
+          {showTraceroutes ? `${traceroutes.length} route${traceroutes.length !== 1 ? "s" : ""}` : "hidden"}
+        </span>
+      </div>
 
       {/* Legend — bottom left */}
       <div style={styles.legend}>
@@ -190,6 +402,14 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
           <span style={{ ...styles.legendDot, background: "#0f172a", border: "2px dashed #94a3b8" }} />
           MQTT
         </span>
+        <span style={styles.legendItem}>
+          <span style={styles.legendLine} />
+          Route
+        </span>
+        <span style={styles.legendItem}>
+          <span style={{ ...styles.legendLine, borderStyle: "dashed", opacity: 0.6 }} />
+          Route (gap)
+        </span>
         <span style={{ color: "#64748b" }}>
           {mappableMesh.length + mappableMqtt.length} / {nodes.length + mqttNodes.length} with GPS
         </span>
@@ -197,6 +417,30 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function mkFeatureCollection(features: GeoJSON.Feature[]): GeoJSON.FeatureCollection {
+  return { type: "FeatureCollection", features };
+}
+
+function ageFilterBtnStyle(active: boolean): React.CSSProperties {
+  return {
+    padding: "0.2rem 0.45rem",
+    fontSize: "0.7rem",
+    borderRadius: "0.3rem",
+    border: active ? "1px solid #60a5fa" : "1px solid #334155",
+    background: active ? "#1e3a5f" : "#1e293b",
+    color: active ? "#93c5fd" : "#94a3b8",
+    cursor: "pointer",
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Popup components
+// ---------------------------------------------------------------------------
 
 function MeshPopup({ node }: { node: NodeInfo }) {
   return (
@@ -279,6 +523,10 @@ function MqttPopup({ node }: { node: MqttNode }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Styles
+// ---------------------------------------------------------------------------
+
 const styles: Record<string, React.CSSProperties> = {
   wrap: {
     flex: 1,
@@ -309,6 +557,26 @@ const styles: Record<string, React.CSSProperties> = {
     border: "2px dashed #22c55e",
     pointerEvents: "none",
   },
+  controls: {
+    position: "absolute",
+    top: "1rem",
+    left: "1rem",
+    background: "#0f172acc",
+    backdropFilter: "blur(4px)",
+    color: "#e2e8f0",
+    padding: "0.4rem 0.6rem",
+    borderRadius: "0.5rem",
+    fontSize: "0.75rem",
+    display: "flex",
+    gap: "0.3rem",
+    alignItems: "center",
+    zIndex: 10,
+  },
+  controlLabel: {
+    color: "#94a3b8",
+    marginRight: "0.15rem",
+    fontSize: "0.7rem",
+  },
   legend: {
     position: "absolute",
     bottom: "1rem",
@@ -334,6 +602,12 @@ const styles: Record<string, React.CSSProperties> = {
     height: "0.75rem",
     borderRadius: "50%",
     display: "inline-block",
+  },
+  legendLine: {
+    display: "inline-block",
+    width: "1.5rem",
+    height: 0,
+    borderTop: "2px solid #94a3b8",
   },
 };
 

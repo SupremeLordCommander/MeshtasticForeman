@@ -235,6 +235,7 @@ export function MessagesPage({ devices, nodes, mqttNodes, initialNodeId, onIniti
     <div style={styles.page}>
       {/* Left: conversation list */}
       <div style={styles.sidebar}>
+        {/* Header row is outside the scrollable area so the picker dropdown can overflow freely */}
         <div style={styles.sidebarHeaderRow}>
           <span style={styles.sidebarHeader}>Conversations</span>
           {deviceId && (
@@ -267,25 +268,27 @@ export function MessagesPage({ devices, nodes, mqttNodes, initialNodeId, onIniti
             </div>
           )}
         </div>
-        {conversations.length === 0 ? (
-          <div style={styles.empty}>No conversations yet.</div>
-        ) : (
-          conversations.map(({ nodeId, lastMessage }) => {
-            const name = nodeName(nodeId, nodes, mqttNodes);
-            const active = nodeId === selectedNodeId;
-            return (
-              <button
-                key={nodeId}
-                style={convoRowStyle(active)}
-                onClick={() => setSelectedNodeId(nodeId)}
-              >
-                <div style={styles.convoName}>{name}</div>
-                <div style={styles.convoPreview}>{truncate(lastMessage.text, 40)}</div>
-                <div style={styles.convoTime}>{formatTime(lastMessage.rxTime)}</div>
-              </button>
-            );
-          })
-        )}
+        <div style={styles.sidebarList}>
+          {conversations.length === 0 ? (
+            <div style={styles.empty}>No conversations yet.</div>
+          ) : (
+            conversations.map(({ nodeId, lastMessage }) => {
+              const name = nodeName(nodeId, nodes, mqttNodes);
+              const active = nodeId === selectedNodeId;
+              return (
+                <button
+                  key={nodeId}
+                  style={convoRowStyle(active)}
+                  onClick={() => setSelectedNodeId(nodeId)}
+                >
+                  <div style={styles.convoName}>{name}</div>
+                  <div style={styles.convoPreview}>{truncate(lastMessage.text, 40)}</div>
+                  <div style={styles.convoTime}>{formatTime(lastMessage.rxTime)}</div>
+                </button>
+              );
+            })
+          )}
+        </div>
       </div>
 
       {/* Right: thread */}
@@ -398,17 +401,21 @@ const styles: Record<string, React.CSSProperties> = {
     width: "260px",
     flexShrink: 0,
     borderRight: "1px solid #1e293b",
-    overflowY: "auto",
-    padding: "0.75rem 0.5rem",
     display: "flex",
     flexDirection: "column",
+    // No overflow here — keeps the picker dropdown from being clipped
+  },
+  sidebarList: {
+    flex: 1,
+    overflowY: "auto" as const,
+    padding: "0 0.5rem 0.75rem",
   },
   sidebarHeaderRow: {
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
-    padding: "0 0.25rem",
-    marginBottom: "0.5rem",
+    padding: "0.75rem 0.75rem 0.5rem",
+    flexShrink: 0,
   },
   sidebarHeader: {
     color: "#334155",
