@@ -1,0 +1,96 @@
+{
+  "version": 1,
+  "comment": "Hierarchical region presets. Settings at each level are deep-merged going from root to leaf — child values override parent values. Add new regions by adding entries to the 'children' array. Settings keys match the device config namespace/section structure.",
+  "regions": [
+    {
+      "id": "US",
+      "label": "United States",
+      "settings": {
+        "radio": {
+          "lora": { "region": 1 }
+        }
+      },
+      "children": [
+        {
+          "id": "US-CA",
+          "label": "California",
+          "settings": {
+            "radio": {
+              "device": { "tzdef": "PST8PDT,M3.2.0/2:00:00,M11.1.0/2:00:00" }
+            }
+          },
+          "children": [
+            {
+              "id": "US-CA-Humboldt",
+              "label": "Humboldt County",
+              "description": "LONG_FAST · Eureka MQTT",
+              "settings": {
+                "radio": {
+                  "lora": { "modemPreset": 0 }
+                },
+                "module": {
+                  "mqtt": { "root": "msh/US/CA/Humboldt/Eureka" }
+                }
+              }
+            },
+            {
+              "id": "US-CA-BayArea",
+              "label": "Bay Area",
+              "description": "MEDIUM_FAST · BayMe.sh MQTT",
+              "settings": {
+                "radio": {
+                  "lora": { "modemPreset": 4 }
+                },
+                "module": {
+                  "mqtt": { "root": "msh/US/CA/BayArea" }
+                }
+              },
+              "mqttDefaults": {
+                "address": "mqtt.bayme.sh",
+                "username": "",
+                "password": ""
+              }
+            }
+          ]
+        },
+        {
+          "id": "US-generic",
+          "label": "Other US region",
+          "description": "No additional modem or MQTT defaults"
+        }
+      ]
+    },
+    {
+      "id": "EU-868",
+      "label": "Europe (868 MHz)",
+      "settings": {
+        "radio": {
+          "lora": { "region": 3 }
+        }
+      }
+    },
+    {
+      "id": "EU-433",
+      "label": "Europe (433 MHz)",
+      "settings": {
+        "radio": {
+          "lora": { "region": 2 }
+        }
+      }
+    },
+    {
+      "id": "ANZ",
+      "label": "Australia / New Zealand",
+      "settings": {
+        "radio": {
+          "lora": { "region": 6 }
+        }
+      }
+    },
+    {
+      "id": "other",
+      "label": "Other / Manual",
+      "description": "Use the config cards below to set region and modem preset manually"
+    }
+  ]
+}
