@@ -725,7 +725,9 @@ export async function registerAnalyticsRoutes(
   });
 
   // ── 12. Link Quality Matrix ─────────────────────────────────────────────────
-  // Returns average SNR for every node-pair that has exchanged messages.
+  // Returns average SNR for every node-pair across all packet types.
+  // Uses packets (not messages) so NodeInfo, position, telemetry, etc. all
+  // contribute — not just text messages.
   // Drives the heatmap: rows/cols = nodes, cell = mean SNR.
   //
   // Query params:
@@ -750,7 +752,7 @@ export async function registerAnalyticsRoutes(
         to_node_id,
         AVG(rx_snr)::REAL  AS avg_snr,
         COUNT(*)           AS message_count
-      FROM messages
+      FROM packets
       ${where ? where + " AND rx_snr IS NOT NULL" : "WHERE rx_snr IS NOT NULL"}
       GROUP BY from_node_id, to_node_id
       ORDER BY message_count DESC

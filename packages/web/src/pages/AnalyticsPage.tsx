@@ -1114,7 +1114,7 @@ function LinkQualityTab({ nodes, mqttNodes }: { nodes: NodeInfo[]; mqttNodes: Mq
 
       <ChartCard title="Link Quality Matrix (SNR dB)" fullWidth>
         {data === null ? <Loading /> : data.length === 0 ? (
-          <Empty message="No messages with SNR data. Link quality requires packets received directly over radio — MQTT-relayed packets do not carry rx_snr." />
+          <Empty message="No SNR data in this time window. Link quality requires packets received directly over radio — MQTT-relayed packets do not carry rx_snr." />
         ) : (
           <div style={{ overflowX: "auto" }}>
             <table style={{ borderCollapse: "collapse", fontFamily: "monospace", fontSize: "0.65rem" }}>
