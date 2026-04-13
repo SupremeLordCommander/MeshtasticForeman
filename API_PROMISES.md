@@ -4,6 +4,7 @@
 > An API promise is a contract: given valid input, the server commits to a specific output.
 > This document covers every REST endpoint and WebSocket command in the daemon.
 > It is the authoritative reference for frontend developers and contributors.
+> *Note* - This is still alpha... these are not so much promises as intents at this point.
 
 **Base URL (REST):** `http://localhost:<PORT>/api`  
 **WebSocket:** `ws://localhost:<PORT>/ws`  
