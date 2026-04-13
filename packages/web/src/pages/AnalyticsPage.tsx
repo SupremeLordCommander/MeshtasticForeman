@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef, lazy, Suspense } from "react";
 import MapGL, { Source, Layer, NavigationControl } from "react-map-gl/maplibre";
 import "maplibre-gl/dist/maplibre-gl.css";
-import type { NodeInfo, MqttNode } from "@foreman/shared";
+import type { NodeInfo, MqttNode, DeviceInfo } from "@foreman/shared";
 import {
   LineChart, Line, BarChart, Bar, AreaChart, Area,
   PieChart, Pie, Cell,
@@ -1177,9 +1177,15 @@ function LinkQualityTab({ nodes, mqttNodes }: { nodes: NodeInfo[]; mqttNodes: Mq
 // Tab 7 — Node Activity Timeline
 // ---------------------------------------------------------------------------
 
-function ActivityTimelineTab({ nodes, mqttNodes }: { nodes: NodeInfo[]; mqttNodes: MqttNode[] }) {
+function ActivityTimelineTab({ nodes, mqttNodes, devices }: { nodes: NodeInfo[]; mqttNodes: MqttNode[]; devices: DeviceInfo[] }) {
   const [since, setSince] = useState("7d");
   const [data,  setData]  = useState<NodeActivityPoint[] | null>(null);
+  const [showLocal, setShowLocal] = useState(false);
+
+  const localNodeIds = useMemo(
+    () => new Set(devices.map((d) => d.ownNodeId).filter((id): id is number => id != null)),
+    [devices],
+  );
 
   const bucket = since === "30d" || since === "all" ? "day" : "hour";
 
@@ -1189,13 +1195,16 @@ function ActivityTimelineTab({ nodes, mqttNodes }: { nodes: NodeInfo[]; mqttNode
       .then(setData).catch(() => setData([]));
   }, [since, bucket]);
 
-  // Top 15 most active nodes
+  // Top 15 most active nodes (excluding local device unless toggled)
   const topNodes = useMemo(() => {
     if (!data) return [];
     const totals = new Map<number, number>();
-    for (const p of data) totals.set(p.nodeId, (totals.get(p.nodeId) ?? 0) + p.count);
+    for (const p of data) {
+      if (!showLocal && localNodeIds.has(p.nodeId)) continue;
+      totals.set(p.nodeId, (totals.get(p.nodeId) ?? 0) + p.count);
+    }
     return [...totals.entries()].sort((a, b) => b[1] - a[1]).slice(0, 15).map(([id]) => id);
-  }, [data]);
+  }, [data, showLocal, localNodeIds]);
 
   // Pivot: one row per ts bucket, columns = nodes
   const pivoted = useMemo(() => {
@@ -1211,8 +1220,25 @@ function ActivityTimelineTab({ nodes, mqttNodes }: { nodes: NodeInfo[]; mqttNode
 
   return (
     <div style={styles.grid}>
-      <div style={{ gridColumn: "1 / -1" }}>
+      <div style={{ gridColumn: "1 / -1", display: "flex", alignItems: "center", gap: "1rem" }}>
         <RangeBtn options={["24h","7d","30d"]} value={since} onChange={setSince} />
+        {localNodeIds.size > 0 && (
+          <button
+            onClick={() => setShowLocal((v) => !v)}
+            style={{
+              padding: "0.25rem 0.75rem",
+              fontSize: "0.75rem",
+              borderRadius: "0.375rem",
+              border: "1px solid",
+              borderColor: showLocal ? "#3b82f6" : "#475569",
+              background: showLocal ? "#1d4ed8" : "transparent",
+              color: showLocal ? "#fff" : "#94a3b8",
+              cursor: "pointer",
+            }}
+          >
+            {showLocal ? "Hide local device" : "Show local device"}
+          </button>
+        )}
       </div>
 
       <ChartCard title="Node Activity Timeline (packets per bucket)" fullWidth>
@@ -1242,7 +1268,10 @@ function ActivityTimelineTab({ nodes, mqttNodes }: { nodes: NodeInfo[]; mqttNode
       <ChartCard title="Total Activity by Node" fullWidth>
         {data === null ? <Loading /> : data.length === 0 ? <Empty /> : (() => {
           const totals = new Map<number, number>();
-          for (const p of data) totals.set(p.nodeId, (totals.get(p.nodeId) ?? 0) + p.count);
+          for (const p of data) {
+            if (!showLocal && localNodeIds.has(p.nodeId)) continue;
+            totals.set(p.nodeId, (totals.get(p.nodeId) ?? 0) + p.count);
+          }
           const sorted = [...totals.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20).map(([id, count]) => ({
             name: nodeName(id, nodes, mqttNodes), count,
           }));
@@ -1448,9 +1477,10 @@ type AnalyticsTab = "signal" | "messages" | "network" | "telemetry" | "packets" 
 interface Props {
   nodes: NodeInfo[];
   mqttNodes: MqttNode[];
+  devices: DeviceInfo[];
 }
 
-export function AnalyticsPage({ nodes, mqttNodes }: Props) {
+export function AnalyticsPage({ nodes, mqttNodes, devices }: Props) {
   const [tab, setTab] = useState<AnalyticsTab>("messages");
 
   return (
@@ -1470,7 +1500,7 @@ export function AnalyticsPage({ nodes, mqttNodes }: Props) {
       {tab === "telemetry"   && <TelemetryTab       nodes={nodes} mqttNodes={mqttNodes} />}
       {tab === "packets"     && <PacketsTab />}
       {tab === "linkquality" && <LinkQualityTab      nodes={nodes} mqttNodes={mqttNodes} />}
-      {tab === "timeline"    && <ActivityTimelineTab nodes={nodes} mqttNodes={mqttNodes} />}
+      {tab === "timeline"    && <ActivityTimelineTab nodes={nodes} mqttNodes={mqttNodes} devices={devices} />}
       {tab === "positions"   && <PositionsTab        nodes={nodes} mqttNodes={mqttNodes} />}
     </div>
   );

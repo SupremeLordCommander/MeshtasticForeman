@@ -684,7 +684,7 @@ export function App() {
       )}
       {tab === "analytics" && (
         <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
-          <AnalyticsPage nodes={effectiveNodes} mqttNodes={effectiveMqttNodes} />
+          <AnalyticsPage nodes={effectiveNodes} mqttNodes={effectiveMqttNodes} devices={devices} />
         </div>
       )}
 
