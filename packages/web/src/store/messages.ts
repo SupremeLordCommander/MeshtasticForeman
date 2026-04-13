@@ -6,6 +6,8 @@ import { foremanClient } from "../ws/client.js";
 // Module-level store — Map from "other node id" to Message[]
 // ---------------------------------------------------------------------------
 
+export const BROADCAST = 0xffffffff;
+
 const conversations = new Map<number, Message[]>();
 const listeners = new Set<() => void>();
 
@@ -14,6 +16,9 @@ function notify() {
 }
 
 function otherNodeId(msg: Message): number {
+  // Broadcast messages always go into the shared public channel thread,
+  // regardless of which node sent them.
+  if (msg.toNodeId === BROADCAST) return BROADCAST;
   return msg.role === "sent" ? msg.toNodeId : msg.fromNodeId;
 }
 
