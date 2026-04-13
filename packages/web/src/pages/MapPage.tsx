@@ -1,7 +1,7 @@
-import { useState, useCallback, useEffect, useMemo } from "react";
-import MapGL, { Marker, Popup, NavigationControl, Source, Layer } from "react-map-gl/maplibre";
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
+import MapGL, { type MapRef, Marker, Popup, NavigationControl, Source, Layer } from "react-map-gl/maplibre";
 import "maplibre-gl/dist/maplibre-gl.css";
-import type { NodeInfo, MqttNode } from "@foreman/shared";
+import type { NodeInfo, MqttNode, DeviceConfig } from "@foreman/shared";
 import { foremanClient } from "../ws/client.js";
 
 type PendingMapAction = { nodeId: number; action: "ping" | "traceroute" };
@@ -59,6 +59,127 @@ const AGE_OPTIONS: { label: string; hours: number }[] = [
   { label: "7d",  hours: 168 },
   { label: "All", hours: 0 },
 ];
+
+// ---------------------------------------------------------------------------
+// Coverage circle helpers
+// ---------------------------------------------------------------------------
+
+const COVERAGE_RADII_KM = [1, 3, 5, 10, 20];
+
+/**
+ * Expected typical LoRa range per modem preset (km).
+ * Based on Meshtastic's documented spreading-factor / bandwidth combinations.
+ * These are optimistic open-terrain estimates — terrain will reduce them.
+ *
+ * Preset numbers match Meshtastic's Config.LoRaConfig.ModemPreset enum:
+ *   0 LONG_FAST · 1 LONG_SLOW · 2 VERY_LONG_SLOW · 3 MEDIUM_SLOW
+ *   4 MEDIUM_FAST · 5 SHORT_SLOW · 6 SHORT_FAST · 7 LONG_MODERATE · 8 SHORT_TURBO
+ */
+const MODEM_PRESET_RADIUS_KM: Record<number, number> = {
+  0: 10,  // LONG_FAST
+  1: 15,  // LONG_SLOW
+  2: 20,  // VERY_LONG_SLOW
+  3: 7,   // MEDIUM_SLOW
+  4: 5,   // MEDIUM_FAST
+  5: 3,   // SHORT_SLOW
+  6: 2,   // SHORT_FAST
+  7: 12,  // LONG_MODERATE
+  8: 1,   // SHORT_TURBO
+};
+const MODEM_PRESET_LABEL: Record<number, string> = {
+  0: "LONG_FAST", 1: "LONG_SLOW", 2: "VERY_LONG_SLOW",
+  3: "MEDIUM_SLOW", 4: "MEDIUM_FAST", 5: "SHORT_SLOW",
+  6: "SHORT_FAST", 7: "LONG_MODERATE", 8: "SHORT_TURBO",
+};
+const DEFAULT_RADIUS_KM = 10; // LONG_FAST fallback
+
+/** Always fetch viewsheds at this radius — one cache entry per node regardless of display radius. */
+const TERRAIN_FETCH_RADIUS_KM = 20;
+
+// ---------------------------------------------------------------------------
+// Viewshed clip helpers
+// ---------------------------------------------------------------------------
+
+/** Spherical destination point — mirrors the formula in coverage.ts */
+function destinationPoint(
+  lat: number, lon: number, bearingDeg: number, distKm: number,
+): { lat: number; lon: number } {
+  const R = 6371;
+  const δ = distKm / R;
+  const φ1 = (lat * Math.PI) / 180;
+  const λ1 = (lon * Math.PI) / 180;
+  const θ = (bearingDeg * Math.PI) / 180;
+  const φ2 = Math.asin(Math.sin(φ1) * Math.cos(δ) + Math.cos(φ1) * Math.sin(δ) * Math.cos(θ));
+  const λ2 = λ1 + Math.atan2(Math.sin(θ) * Math.sin(δ) * Math.cos(φ1), Math.cos(δ) - Math.sin(φ1) * Math.sin(φ2));
+  return { lat: (φ2 * 180) / Math.PI, lon: (((λ2 * 180) / Math.PI) + 540) % 360 - 180 };
+}
+
+/**
+ * Trim a viewshed polygon (always fetched at TERRAIN_FETCH_RADIUS_KM) to a
+ * smaller display radius.  Each vertex beyond maxRadiusKm is projected back
+ * to that radius along the same bearing from the source, preserving the
+ * terrain shape where it's closer than the limit.
+ */
+function clipViewshedToRadius(
+  polygon: GeoJSON.Feature<GeoJSON.Polygon>,
+  sourceLat: number,
+  sourceLon: number,
+  maxRadiusKm: number,
+): GeoJSON.Feature<GeoJSON.Polygon> {
+  const R = 6371;
+  const ring = polygon.geometry.coordinates[0];
+  const clipped = ring.map(([lon, lat]): [number, number] => {
+    const dLat = ((lat - sourceLat) * Math.PI) / 180;
+    const dLon = ((lon - sourceLon) * Math.PI) / 180;
+    const a = Math.sin(dLat / 2) ** 2
+      + Math.cos((sourceLat * Math.PI) / 180) * Math.cos((lat * Math.PI) / 180) * Math.sin(dLon / 2) ** 2;
+    const distKm = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    if (distKm <= maxRadiusKm) return [lon, lat];
+    // Bearing source → vertex, then project back to maxRadiusKm
+    const φ1 = (sourceLat * Math.PI) / 180;
+    const φ2 = (lat * Math.PI) / 180;
+    const Δλ = ((lon - sourceLon) * Math.PI) / 180;
+    const bearing = (Math.atan2(Math.sin(Δλ) * Math.cos(φ2), Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ)) * 180) / Math.PI;
+    const pt = destinationPoint(sourceLat, sourceLon, bearing, maxRadiusKm);
+    return [pt.lon, pt.lat];
+  });
+  return { ...polygon, geometry: { type: "Polygon", coordinates: [clipped] } };
+}
+
+function presetRadiusKm(deviceConfigs: Map<string, DeviceConfig>, deviceId: string | null | undefined): number {
+  if (!deviceId) return DEFAULT_RADIUS_KM;
+  const cfg = deviceConfigs.get(deviceId);
+  const preset = (cfg?.radioConfig as { lora?: { modemPreset?: number } } | undefined)?.lora?.modemPreset;
+  if (preset == null) return DEFAULT_RADIUS_KM;
+  return MODEM_PRESET_RADIUS_KM[preset] ?? DEFAULT_RADIUS_KM;
+}
+
+/**
+ * Approximate a geodesic circle as a GeoJSON Polygon.
+ * Uses equirectangular projection — accurate enough for LoRa ranges (≤20 km).
+ */
+function buildCoverageCircle(
+  lon: number,
+  lat: number,
+  radiusKm: number,
+  color: string,
+  steps = 64,
+  focused = false,
+): GeoJSON.Feature<GeoJSON.Polygon> {
+  const latRad = (lat * Math.PI) / 180;
+  const dLat = radiusKm / 110.574;
+  const dLon = radiusKm / (111.32 * Math.cos(latRad));
+  const coords: [number, number][] = [];
+  for (let i = 0; i <= steps; i++) {
+    const angle = (i / steps) * 2 * Math.PI;
+    coords.push([lon + dLon * Math.cos(angle), lat + dLat * Math.sin(angle)]);
+  }
+  return {
+    type: "Feature",
+    properties: { color, focused: focused ? 1 : 0 },
+    geometry: { type: "Polygon", coordinates: [coords] },
+  };
+}
 
 // ---------------------------------------------------------------------------
 // GeoJSON line building
@@ -124,15 +245,51 @@ interface Props {
   showMqtt: boolean;
   setShowMqtt: (fn: (v: boolean) => boolean) => void;
   deviceId?: string | null;
+  deviceConfigs?: Map<string, DeviceConfig>;
   onMessage?: (nodeId: number) => void;
+  focusedNodeId?: number | null;
+  onClearFocusedNode?: () => void;
 }
 
-export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, setShowMqtt, deviceId, onMessage }: Props) {
+export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, setShowMqtt, deviceId, deviceConfigs, onMessage, focusedNodeId, onClearFocusedNode }: Props) {
   const [selected, setSelected] = useState<SelectedNode | null>(null);
   const [traceroutes, setTraceroutes] = useState<StoredTraceroute[]>([]);
   const [showTraceroutes, setShowTraceroutes] = useState(false);
   const [ageHours, setAgeHours] = useState(24);
   const [pendingAction, setPendingAction] = useState<PendingMapAction | null>(null);
+  const [showCoverage, setShowCoverage] = useState(false);
+  const [terrainMode, setTerrainMode] = useState(false);
+  const [coverageRadiusKm, setCoverageRadiusKm] = useState(() =>
+    presetRadiusKm(deviceConfigs ?? new Map(), deviceId)
+  );
+  // Re-snap radius to preset when config first arrives (e.g. device connects after page load),
+  // but only if the user hasn't manually picked a radius yet.
+  const [userPickedRadius, setUserPickedRadius] = useState(false);
+  useEffect(() => {
+    if (userPickedRadius) return;
+    setCoverageRadiusKm(presetRadiusKm(deviceConfigs ?? new Map(), deviceId));
+  }, [deviceId, deviceConfigs]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Viewshed cache: nodeId → GeoJSON polygon always fetched at TERRAIN_FETCH_RADIUS_KM.
+  // One entry per node; display radius is applied via clipViewshedToRadius at render time.
+  const viewshedCache = useRef(new Map<string, GeoJSON.Feature<GeoJSON.Polygon>>());
+  const [viewshedStatus, setViewshedStatus] = useState<Map<number, "loading" | "ready" | "error">>(new Map());
+  const mapRef = useRef<MapRef>(null);
+
+  // When a node is focused from the Nodes tab: enable terrain coverage and fly to it.
+  useEffect(() => {
+    if (focusedNodeId == null) return;
+    setShowCoverage(true);
+    setTerrainMode(true);
+  }, [focusedNodeId]);
+
+  useEffect(() => {
+    if (focusedNodeId == null) return;
+    const node = [...mappableMesh, ...mappableMqtt].find((n) => n.nodeId === focusedNodeId);
+    if (!node?.longitude || !node?.latitude) return;
+    mapRef.current?.flyTo({ center: [node.longitude, node.latitude], zoom: 12, duration: 1200 });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusedNodeId]);
 
   // Clear popup when the relevant source is hidden
   useEffect(() => {
@@ -222,9 +379,99 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
     };
   }, [traceroutes, posMap, showTraceroutes]);
 
-  const mappableMesh = nodes.filter((n) => n.latitude != null && n.longitude != null);
-  const mappableMqtt = mqttNodes.filter((n) => n.latitude != null && n.longitude != null);
+  // Stable keys — recompute only when the set of GPS-equipped nodes or their positions change.
+  // Sorted so ordering differences in the incoming array don't cause spurious cache misses.
+  const meshGpsKey = nodes
+    .filter((n) => n.latitude != null && n.longitude != null)
+    .map((n) => `${n.nodeId}:${n.latitude?.toFixed(4)}:${n.longitude?.toFixed(4)}`)
+    .sort()
+    .join("|");
+  const mqttGpsKey = mqttNodes
+    .filter((n) => n.latitude != null && n.longitude != null)
+    .map((n) => `${n.nodeId}:${n.latitude?.toFixed(4)}:${n.longitude?.toFixed(4)}`)
+    .sort()
+    .join("|");
+
+  // Only produce new array references when GPS-relevant data actually changes,
+  // preventing the viewshed effect from re-firing on every WebSocket update.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const mappableMesh = useMemo(() => nodes.filter((n) => n.latitude != null && n.longitude != null), [meshGpsKey]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const mappableMqtt = useMemo(() => mqttNodes.filter((n) => n.latitude != null && n.longitude != null), [mqttGpsKey]);
   const allMappable = [...mappableMesh, ...mappableMqtt];
+
+  // Fetch terrain viewsheds for all mappable nodes when terrain mode is active.
+  // Placed after mappableMesh/mappableMqtt so those variables are in scope.
+  useEffect(() => {
+    if (!showCoverage || !terrainMode) {
+      setViewshedStatus(new Map());
+      return;
+    }
+    // In single-node mode only fetch for that node; otherwise fetch all.
+    const allNodes = focusedNodeId != null
+      ? [...mappableMesh, ...mappableMqtt].filter((n) => n.nodeId === focusedNodeId)
+      : [...mappableMesh, ...mappableMqtt];
+    if (allNodes.length === 0) return;
+
+    // Initialise status without resetting already-cached nodes — avoids the
+    // "X/76 loading" flicker when the effect fires due to unrelated node updates.
+    // Cache key is just nodeId — always fetched at TERRAIN_FETCH_RADIUS_KM (20km).
+    const pending = new Map<number, "loading" | "ready" | "error">();
+    for (const n of allNodes) {
+      pending.set(n.nodeId, viewshedCache.current.has(`${n.nodeId}`) ? "ready" : "loading");
+    }
+    setViewshedStatus(new Map(pending));
+
+    for (const n of allNodes) {
+      const key = `${n.nodeId}`;
+      if (viewshedCache.current.has(key)) continue;
+      const antennaM = n.altitude != null ? n.altitude + 2 : 2;
+      const url = `/api/coverage/viewshed?lat=${n.latitude}&lon=${n.longitude}&radiusKm=${TERRAIN_FETCH_RADIUS_KM}&altitudeM=${antennaM}`;
+      fetch(url)
+        .then((r) => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          return r.json() as Promise<GeoJSON.Feature<GeoJSON.Polygon>>;
+        })
+        .then((geojson) => {
+          viewshedCache.current.set(key, geojson);
+          pending.set(n.nodeId, "ready");
+          setViewshedStatus(new Map(pending));
+        })
+        .catch(() => {
+          pending.set(n.nodeId, "error");
+          setViewshedStatus(new Map(pending));
+        });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showCoverage, terrainMode, focusedNodeId, mappableMesh, mappableMqtt]);
+
+  // Build GeoJSON coverage layer — terrain polygons when ready, circles otherwise.
+  // viewshedStatus is in deps so the memo refreshes as viewsheds come in.
+  const coverageGeoJson = useMemo<GeoJSON.FeatureCollection>(() => {
+    if (!showCoverage) return mkFeatureCollection([]);
+    // In single-node mode show only the focused node; otherwise show all.
+    const nodesToShow = focusedNodeId != null
+      ? [...mappableMesh, ...mappableMqtt].filter((n) => n.nodeId === focusedNodeId)
+      : [...mappableMesh, ...mappableMqtt];
+    const features: GeoJSON.Feature[] = [];
+    for (const n of nodesToShow) {
+      const color = nodeColor(n.nodeId);
+      const isFocused = n.nodeId === focusedNodeId;
+      const cached = viewshedCache.current.get(`${n.nodeId}`);
+      if (terrainMode && cached) {
+        // Clip 20km polygon down to the display radius when needed
+        const poly = coverageRadiusKm < TERRAIN_FETCH_RADIUS_KM
+          ? clipViewshedToRadius(cached, n.latitude!, n.longitude!, coverageRadiusKm)
+          : cached;
+        features.push({ ...poly, properties: { ...poly.properties, color, focused: isFocused ? 1 : 0 } });
+      } else {
+        // Fallback: simple geodesic circle (also shown while viewshed is loading)
+        features.push(buildCoverageCircle(n.longitude!, n.latitude!, coverageRadiusKm, color, 64, isFocused));
+      }
+    }
+    return mkFeatureCollection(features);
+  // viewshedStatus triggers re-evaluation as terrain data arrives
+  }, [showCoverage, terrainMode, coverageRadiusKm, focusedNodeId, mappableMesh, mappableMqtt, viewshedStatus]);
 
   const firstNode = allMappable[0];
   const initialView = {
@@ -257,6 +504,7 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
   return (
     <div style={styles.wrap}>
       <MapGL
+        ref={mapRef}
         key={allMappable.length > 0 ? "has-gps" : "no-gps"}
         initialViewState={initialView}
         style={{ width: "100%", height: "100%" }}
@@ -265,6 +513,28 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
         onClick={() => setSelected(null)}
       >
         <NavigationControl position="top-right" />
+
+        {/* Coverage circles — one per node with GPS */}
+        <Source id="coverage" type="geojson" data={coverageGeoJson}>
+          <Layer
+            id="coverage-fill"
+            type="fill"
+            paint={{
+              "fill-color": ["get", "color"],
+              "fill-opacity": ["case", ["==", ["get", "focused"], 1], 0.28, 0.15],
+            }}
+          />
+          <Layer
+            id="coverage-outline"
+            type="line"
+            paint={{
+              "line-color": ["get", "color"],
+              "line-width": ["case", ["==", ["get", "focused"], 1], 2, 1],
+              "line-opacity": ["case", ["==", ["get", "focused"], 1], 0.8, 0.5],
+              "line-dasharray": [4, 2],
+            }}
+          />
+        </Source>
 
         {/* Traceroute lines — solid (all hops known) */}
         <Source id="traceroutes-solid" type="geojson" data={solidGeoJson}>
@@ -417,6 +687,85 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
         </span>
       </div>
 
+      {/* Coverage radius controls — below traceroute controls */}
+      <div style={{ ...styles.controls, top: "3.5rem" }}>
+        <span style={styles.controlLabel}>
+          Coverage
+          {(() => {
+            if (!deviceId || !deviceConfigs) return ":";
+            const cfg = deviceConfigs.get(deviceId);
+            const preset = (cfg?.radioConfig as { lora?: { modemPreset?: number } } | undefined)?.lora?.modemPreset;
+            if (preset == null) return ":";
+            return ` (${MODEM_PRESET_LABEL[preset] ?? preset}):`;
+          })()}
+        </span>
+        {COVERAGE_RADII_KM.map((km) => (
+          <button
+            key={km}
+            style={ageFilterBtnStyle(showCoverage && coverageRadiusKm === km)}
+            onClick={() => {
+              setShowCoverage(true);
+              setCoverageRadiusKm(km);
+              setUserPickedRadius(true);
+            }}
+          >
+            {km}km
+          </button>
+        ))}
+        <button
+          style={{
+            ...ageFilterBtnStyle(showCoverage && terrainMode),
+            borderColor: showCoverage && terrainMode ? "#86efac" : undefined,
+            color: showCoverage && terrainMode ? "#86efac" : undefined,
+            background: showCoverage && terrainMode ? "#14532d" : undefined,
+          }}
+          onClick={() => {
+            setShowCoverage(true);
+            setTerrainMode((v) => !v);
+          }}
+          title="Terrain-aware coverage (fetches elevation data)"
+        >
+          Terrain
+        </button>
+        <button
+          style={ageFilterBtnStyle(!showCoverage)}
+          onClick={() => { setShowCoverage((v) => !v); if (showCoverage) setTerrainMode(false); }}
+          title="Hide coverage"
+        >
+          Off
+        </button>
+        {focusedNodeId != null && (
+          <button
+            style={{
+              ...ageFilterBtnStyle(false),
+              borderColor: "#86efac",
+              color: "#86efac",
+              marginLeft: "0.25rem",
+            }}
+            onClick={() => onClearFocusedNode?.()}
+            title="Return to all-nodes coverage view"
+          >
+            ← All nodes
+          </button>
+        )}
+        {showCoverage && terrainMode && (() => {
+          const total = viewshedStatus.size;
+          const done  = [...viewshedStatus.values()].filter((s) => s !== "loading").length;
+          const errors = [...viewshedStatus.values()].filter((s) => s === "error").length;
+          if (total === 0) return null;
+          if (done < total) return (
+            <span style={{ color: "#86efac", fontSize: "0.7rem", fontFamily: "monospace" }}>
+              {done}/{total}…
+            </span>
+          );
+          return (
+            <span style={{ color: errors > 0 ? "#fca5a5" : "#86efac", fontSize: "0.7rem", fontFamily: "monospace" }}>
+              {errors > 0 ? `${errors} failed` : "ready"}
+            </span>
+          );
+        })()}
+      </div>
+
       {/* Legend — bottom left */}
       <div style={styles.legend}>
         <span style={styles.legendItem}>
@@ -439,6 +788,16 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
           <span style={{ ...styles.legendLine, borderStyle: "dashed", opacity: 0.6 }} />
           Route (gap)
         </span>
+        {showCoverage && (
+          <span style={styles.legendItem}>
+            <span style={{
+              display: "inline-block", width: "1rem", height: "1rem",
+              borderRadius: terrainMode ? "2px" : "50%",
+              background: "#94a3b833", border: "1px dashed #94a3b8",
+            }} />
+            {terrainMode ? "Terrain LOS" : `${coverageRadiusKm}km range`}
+          </span>
+        )}
         <span style={{ color: "#64748b" }}>
           {mappableMesh.length + mappableMqtt.length} / {nodes.length + mqttNodes.length} with GPS
         </span>

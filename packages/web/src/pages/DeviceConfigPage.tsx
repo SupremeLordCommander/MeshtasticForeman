@@ -240,7 +240,7 @@ function SetupWizard({ deviceId, onClose }: { deviceId: string; onClose: () => v
   const listenerRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
-    fetch("/region-presets.json").then(r => r.json()).then(setPresets).catch(console.error);
+    fetch("/api/region-presets").then(r => r.json()).then(setPresets).catch(console.error);
     return () => { listenerRef.current?.(); };
   }, []);
 

@@ -22,6 +22,14 @@
 - [ ] **Multi-device MQTT messages** — use a private channel key to decrypt messages from other devices via MQTT
 - [ ] **Multiple devices per daemon** — connect more than one device to the same backend
 
+## Backlog / future ideas
+
+These are concrete ideas worth exploring when the above work stabilises:
+
+- **Terrain-aware coverage prediction (phase 2)** — integrate SRTM elevation data via Open-Elevation API to compute actual line-of-sight distances per radial from each node, replacing the current radius-only circles with realistic propagation shapes
+- **Force-directed topology graph** — replace the current SVG neighbour graph with a proper force-directed library (e.g. Cytoscape.js or react-force-graph) for large meshes where the current layout gets cluttered
+- **TimescaleDB / long-term telemetry** — migrate the `packets` table to TimescaleDB for automatic time-series compression and continuous aggregates; makes months-long SNR/telemetry trend analysis practical without manual pruning
+
 ## Ideas welcome
 
 Open an issue to discuss features before building — saves everyone time.

@@ -125,6 +125,7 @@ export function App() {
   const gpsRef = useRef<HTMLDivElement>(null);
   const [gpsPending, setGpsPending] = useState<Set<string>>(new Set());
   const [messageTarget, setMessageTarget] = useState<number | null>(null);
+  const [focusedCoverageNodeId, setFocusedCoverageNodeId] = useState<number | null>(null);
 
   // ── Map filters ────────────────────────────────────────────────────────────
   const [showMesh, setShowMesh] = useState(true);
@@ -620,6 +621,7 @@ export function App() {
             nodes={effectiveNodes}
             mqttNodes={effectiveMqttNodes}
             onMessage={(nodeId) => { setMessageTarget(nodeId); setTab("messages"); }}
+            onCoverageMap={(nodeId) => { setFocusedCoverageNodeId(nodeId); setTab("map"); }}
           />
         </div>
       )}
@@ -632,6 +634,9 @@ export function App() {
           showMqtt={showMqtt}
           setShowMqtt={setShowMqtt}
           deviceId={devices.find((d) => d.status === "connected")?.id ?? null}
+          deviceConfigs={deviceConfigs}
+          focusedNodeId={focusedCoverageNodeId}
+          onClearFocusedNode={() => setFocusedCoverageNodeId(null)}
           onMessage={(nodeId) => { setMessageTarget(nodeId); setTab("messages"); }}
         />
       )}

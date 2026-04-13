@@ -174,6 +174,13 @@ export class DeviceManager extends EventEmitter {
     meshDevice.events.onFromRadio.subscribe((msg: any) => {
       const variant = msg?.payloadVariant?.case ?? "unknown";
       if (variant === "packet") return; // already handled by onMeshPacket
+      if (variant === "fileInfo") {
+        // Device is advertising a file on its local filesystem (map tiles,
+        // ringtones, UI assets, etc.).  Informational only — log and move on.
+        const f = msg.payloadVariant.value;
+        console.log(`[devices] fileInfo ${name}: "${f?.fileName ?? "?"}" (${f?.sizeBytes ?? "??"} bytes)`);
+        return;
+      }
       console.log(`[devices] fromRadio ${name} variant=${variant}`);
     });
 
@@ -596,6 +603,109 @@ export class DeviceManager extends EventEmitter {
       },
     };
     this.emit("event", event);
+
+    // Bot command handler — only active when BOT_ENABLED=true
+    if (process.env.BOT_ENABLED === "true" && packet.data?.startsWith("!")) {
+      await this._handleBotCommand(deviceId, packet).catch((err) =>
+        console.error("[bot] command handler error:", err)
+      );
+    }
+  }
+
+  private async _handleBotCommand(
+    deviceId: string,
+    packet: Types.PacketMetadata<string>
+  ): Promise<void> {
+    const device = this.devices.get(deviceId);
+    if (!device) return;
+
+    const raw = packet.data.trim();
+    const [cmd, ...args] = raw.slice(1).toLowerCase().split(/\s+/);
+    let reply: string | null = null;
+
+    switch (cmd) {
+      case "ping":
+        reply = "pong!";
+        break;
+
+      case "help":
+        reply = "Commands: !ping !nodes !status !help";
+        break;
+
+      case "nodes": {
+        const { rows } = await this.db.query<{ cnt: string }>(
+          "SELECT COUNT(*) AS cnt FROM nodes WHERE device_id = $1",
+          [deviceId]
+        );
+        reply = `${rows[0]?.cnt ?? 0} nodes in mesh`;
+        break;
+      }
+
+      case "status": {
+        const { rows } = await this.db.query<{ cnt: string }>(
+          "SELECT COUNT(*) AS cnt FROM nodes WHERE device_id = $1",
+          [deviceId]
+        );
+        const nodeCount = rows[0]?.cnt ?? 0;
+        const myNodeId = this.myNodeIds.get(deviceId);
+        reply = `Foreman OK · ${nodeCount} nodes · me: !${(myNodeId ?? 0).toString(16).padStart(8, "0")}`;
+        break;
+      }
+
+      default:
+        // Unknown command — ignore silently unless it looks intentional
+        if (args.length === 0 && raw.length < 20) {
+          reply = `Unknown command "${cmd}". Try !help`;
+        }
+        break;
+    }
+
+    if (!reply) return;
+
+    const toNodeId = packet.from;        // reply to whoever sent it
+    const channelIndex = packet.channel; // same channel
+
+    const packetId = await device.meshDevice.sendText(
+      reply,
+      toNodeId,
+      false,
+      channelIndex as Types.ChannelNumber
+    );
+
+    const txTime = new Date().toISOString();
+    const msgId  = randomUUID();
+    const myNodeId = this.myNodeIds.get(deviceId) ?? 0;
+
+    await this.db.query(
+      `INSERT INTO messages(id, packet_id, device_id, from_node_id, to_node_id, channel_index,
+         text, rx_time, want_ack, role, ack_status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false, 'sent', null)`,
+      [msgId, packetId, deviceId, myNodeId, toNodeId, channelIndex, reply, txTime]
+    );
+
+    const botEvent: ServerEvent = {
+      type: "message:received",
+      payload: {
+        id: msgId,
+        packetId,
+        fromNodeId: myNodeId,
+        toNodeId,
+        channelIndex,
+        text: reply,
+        rxTime: txTime,
+        rxSnr: null,
+        rxRssi: null,
+        hopLimit: null,
+        wantAck: false,
+        viaMqtt: false,
+        role: "sent",
+        ackStatus: null,
+        ackAt: null,
+        ackError: null,
+      },
+    };
+    this.emit("event", botEvent);
+    console.log(`[bot] replied to !${cmd} → "${reply}" → !${toNodeId.toString(16).padStart(8, "0")}`);
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
