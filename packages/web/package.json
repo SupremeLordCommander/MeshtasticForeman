@@ -16,7 +16,9 @@
     "react-dom": "^19.0.0",
     "react-force-graph-2d": "^1.29.1",
     "react-map-gl": "^8.1.0",
+    "react-markdown": "^9.0.1",
     "recharts": "^3.8.1",
+    "remark-gfm": "^4.0.0",
     "zod": "^3.24.0"
   },
   "devDependencies": {

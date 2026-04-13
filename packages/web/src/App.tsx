@@ -11,6 +11,9 @@ import { MessagesPage } from "./pages/MessagesPage.js";
 import { AnalyticsPage } from "./pages/AnalyticsPage.js";
 import { initMessageStore, loadRecentMessages } from "./store/messages.js";
 import logo from "./assets/logo.png";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import apiPromisesRaw from "../../../API_PROMISES.md?raw";
 
 // Initialize message store once at module load
 initMessageStore();
@@ -117,6 +120,7 @@ export function App() {
   const [deviceConfigs, setDeviceConfigs] = useState<Map<string, DeviceConfig>>(new Map());
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const [apiDocsOpen, setApiDocsOpen] = useState(false);
   const [gpsOpen, setGpsOpen] = useState(false);
   const gpsRef = useRef<HTMLDivElement>(null);
   const [gpsPending, setGpsPending] = useState<Set<string>>(new Set());
@@ -486,6 +490,9 @@ export function App() {
                 <button style={menuNavBtn(tab === "config")} onClick={() => navigate("config")}>
                   Device Config
                 </button>
+                <button style={menuNavBtn(false)} onClick={() => { setApiDocsOpen(true); setMenuOpen(false); }}>
+                  API Docs
+                </button>
               </div>
 
               {/* Tab-specific filters */}
@@ -680,6 +687,34 @@ export function App() {
           <AnalyticsPage nodes={effectiveNodes} mqttNodes={effectiveMqttNodes} />
         </div>
       )}
+
+      {/* ── API Docs modal ─────────────────────────────────────────────────── */}
+      {apiDocsOpen && (
+        <div
+          style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(0,0,0,0.75)", display: "flex", alignItems: "center", justifyContent: "center" }}
+          onClick={() => setApiDocsOpen(false)}
+        >
+          <div
+            style={{ background: "#0f172a", border: "1px solid #1e293b", borderRadius: "0.5rem", width: "90vw", maxWidth: "900px", height: "90vh", display: "flex", flexDirection: "column", boxShadow: "0 16px 48px rgba(0,0,0,0.8)" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0.6rem 1rem", borderBottom: "1px solid #1e293b", flexShrink: 0 }}>
+              <span style={{ fontFamily: "monospace", color: "#94a3b8", fontSize: "0.75rem", textTransform: "uppercase", letterSpacing: "0.08em" }}>API Reference</span>
+              <button
+                onClick={() => setApiDocsOpen(false)}
+                style={{ background: "none", border: "1px solid #1e293b", color: "#64748b", cursor: "pointer", fontSize: "0.8rem", borderRadius: "0.25rem", padding: "0.15rem 0.5rem", fontFamily: "monospace" }}
+              >
+                ✕ close
+              </button>
+            </div>
+            <div style={{ flex: 1, overflowY: "auto", padding: "1.25rem 1.75rem" }}>
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
+                {apiPromisesRaw}
+              </ReactMarkdown>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -699,6 +734,38 @@ function sortNodes(nodes: NodeInfo[]): NodeInfo[] {
     return new Date(b.lastHeard).getTime() - new Date(a.lastHeard).getTime();
   });
 }
+
+// Markdown component overrides — dark-theme inline styles for react-markdown output
+const mdComponents: React.ComponentProps<typeof ReactMarkdown>["components"] = {
+  h1: ({ children }) => <h1 style={{ color: "#f8fafc", fontSize: "1.4rem", fontFamily: "monospace", borderBottom: "1px solid #1e293b", paddingBottom: "0.4rem", marginTop: "1.5rem" }}>{children}</h1>,
+  h2: ({ children }) => <h2 style={{ color: "#e2e8f0", fontSize: "1.1rem", fontFamily: "monospace", borderBottom: "1px solid #1e293b", paddingBottom: "0.25rem", marginTop: "1.5rem" }}>{children}</h2>,
+  h3: ({ children }) => <h3 style={{ color: "#cbd5e1", fontSize: "0.95rem", fontFamily: "monospace", marginTop: "1.25rem" }}>{children}</h3>,
+  h4: ({ children }) => <h4 style={{ color: "#94a3b8", fontSize: "0.875rem", fontFamily: "monospace", marginTop: "1rem" }}>{children}</h4>,
+  p:  ({ children }) => <p  style={{ color: "#94a3b8", fontSize: "0.85rem", lineHeight: 1.65, margin: "0.5rem 0" }}>{children}</p>,
+  a:  ({ href, children }) => <a href={href} style={{ color: "#3b82f6" }} target="_blank" rel="noreferrer">{children}</a>,
+  strong: ({ children }) => <strong style={{ color: "#e2e8f0" }}>{children}</strong>,
+  code: ({ children, className }) => {
+    const isBlock = className?.startsWith("language-");
+    return isBlock
+      ? <code style={{ display: "block", background: "#0d1420", border: "1px solid #1e293b", borderRadius: "0.375rem", padding: "0.75rem 1rem", fontSize: "0.78rem", color: "#94a3b8", overflowX: "auto", whiteSpace: "pre" }}>{children}</code>
+      : <code style={{ background: "#1e293b", borderRadius: "0.2rem", padding: "0.1rem 0.35rem", fontSize: "0.8rem", color: "#7dd3fc" }}>{children}</code>;
+  },
+  pre: ({ children }) => <pre style={{ margin: "0.6rem 0" }}>{children}</pre>,
+  blockquote: ({ children }) => <blockquote style={{ borderLeft: "3px solid #334155", paddingLeft: "1rem", margin: "0.5rem 0", color: "#64748b", fontSize: "0.85rem" }}>{children}</blockquote>,
+  hr: () => <hr style={{ border: "none", borderTop: "1px solid #1e293b", margin: "1.25rem 0" }} />,
+  ul: ({ children }) => <ul style={{ paddingLeft: "1.25rem", margin: "0.4rem 0", color: "#94a3b8", fontSize: "0.85rem" }}>{children}</ul>,
+  ol: ({ children }) => <ol style={{ paddingLeft: "1.25rem", margin: "0.4rem 0", color: "#94a3b8", fontSize: "0.85rem" }}>{children}</ol>,
+  li: ({ children }) => <li style={{ margin: "0.15rem 0" }}>{children}</li>,
+  table: ({ children }) => (
+    <div style={{ overflowX: "auto", margin: "0.75rem 0" }}>
+      <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "0.8rem", fontFamily: "monospace" }}>{children}</table>
+    </div>
+  ),
+  thead: ({ children }) => <thead style={{ background: "#0d1420" }}>{children}</thead>,
+  th: ({ children }) => <th style={{ color: "#64748b", textAlign: "left", padding: "0.35rem 0.75rem", borderBottom: "1px solid #1e293b", whiteSpace: "nowrap" }}>{children}</th>,
+  td: ({ children }) => <td style={{ color: "#94a3b8", padding: "0.3rem 0.75rem", borderBottom: "1px solid #0f172a", verticalAlign: "top" }}>{children}</td>,
+  tr: ({ children }) => <tr style={{ borderBottom: "1px solid #1e293b" }}>{children}</tr>,
+};
 
 function tabStyle(active: boolean): React.CSSProperties {
   return {
