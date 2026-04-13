@@ -331,13 +331,14 @@ interface Props {
   nodes: NodeInfo[];
   mqttNodes: MqttNode[];
   onMessage?: (nodeId: number) => void;
+  onCoverageMap?: (nodeId: number) => void;
 }
 
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
-export function NodesPage({ devices, nodes, mqttNodes, onMessage }: Props) {
+export function NodesPage({ devices, nodes, mqttNodes, onMessage, onCoverageMap }: Props) {
   const [filter, setFilter] = useState("");
   const [sortCol, setSortCol] = useState<SortCol>("distance");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
@@ -410,6 +411,7 @@ export function NodesPage({ devices, nodes, mqttNodes, onMessage }: Props) {
           devices={devices}
           onClose={() => setSelectedNodeId(null)}
           onMessage={onMessage}
+          onCoverageMap={onCoverageMap}
         />
       )}
       <section style={styles.section}>

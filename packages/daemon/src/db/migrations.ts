@@ -230,6 +230,20 @@ const migrations: string[] = [
   CREATE INDEX IF NOT EXISTS position_history_node_time   ON position_history(node_id, recorded_at DESC);
   CREATE INDEX IF NOT EXISTS position_history_device_time ON position_history(device_id, recorded_at DESC);
   `,
+
+  /* 013 – elevation_cache: persisted terrain elevation lookups.
+            Keyed by lat/lon rounded to 4 decimal places (~11 m precision).
+            Cached for 30 days — elevation data changes negligibly over that
+            window and we want to be a good citizen to public elevation APIs. */
+  `
+  CREATE TABLE IF NOT EXISTS elevation_cache (
+    lat_key    TEXT NOT NULL,
+    lon_key    TEXT NOT NULL,
+    elevation  REAL NOT NULL,
+    cached_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (lat_key, lon_key)
+  );
+  `,
 ];
 
 export async function runMigrations(db: PGlite) {

@@ -10,6 +10,7 @@ interface Props {
   devices: DeviceInfo[];
   onClose: () => void;
   onMessage?: (nodeId: number) => void;
+  onCoverageMap?: (nodeId: number) => void;
 }
 
 const CHANNEL_ROLES_SHORT = ["Pri", "Sec", "Sec", "Sec", "Sec", "Sec", "Sec", "Sec"];
@@ -44,7 +45,7 @@ function formatTime(iso: string) {
   return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-export function NodeDetailPanel({ nodeId, mesh, mqtt, devices, onClose, onMessage }: Props) {
+export function NodeDetailPanel({ nodeId, mesh, mqtt, devices, onClose, onMessage, onCoverageMap }: Props) {
   const deviceId = devices.find((d) => d.status === "connected")?.id ?? null;
   const primary = mesh ?? mqtt!;
 
@@ -218,6 +219,18 @@ export function NodeDetailPanel({ nodeId, mesh, mqtt, devices, onClose, onMessag
                   {pendingAction === "remove" ? "Removing…" : "Reset Node"}
                 </button>
               )}
+            </div>
+          )}
+
+          {/* Coverage map — available for any node with GPS, regardless of connection state */}
+          {onCoverageMap && primary.latitude != null && primary.longitude != null && (
+            <div style={{ ...styles.actions, marginTop: "0.3rem" }}>
+              <button
+                style={{ ...actionBtnStyle(false), borderColor: "#166534", color: "#86efac" }}
+                onClick={() => { onClose(); onCoverageMap(nodeId); }}
+              >
+                🗺 Coverage Map
+              </button>
             </div>
           )}
 

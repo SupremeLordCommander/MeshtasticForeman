@@ -1,9 +1,16 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import { join, dirname } from "node:path";
 import type { DeviceManager } from "../device/device-manager.js";
 import type { MqttGateway } from "../mqtt/gateway.js";
 import type { PGlite } from "@electric-sql/pglite";
 import { getHwModels } from "../hw-models.js";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+// region-presets.json lives at the project root — 3 levels up from src/ or dist/
+const REGION_PRESETS_PATH = join(__dirname, "../../..", "region-presets.json");
 
 const connectBodySchema = z.object({
   port: z.string().min(1),
@@ -24,6 +31,18 @@ export async function registerDeviceRoutes(
   mqttGateway?: MqttGateway | null,
   db?: PGlite,
 ) {
+  // Serve region-presets.json from the project root so both the web frontend
+  // and any other tooling can consume it via a single canonical URL.
+  app.get("/api/region-presets", async (_req, reply) => {
+    try {
+      const json = await readFile(REGION_PRESETS_PATH, "utf8");
+      reply.header("Content-Type", "application/json");
+      return reply.send(json);
+    } catch {
+      return reply.status(404).send({ error: "region-presets.json not found at project root" });
+    }
+  });
+
   app.get("/api/devices", async () => {
     const rows = await deviceManager.listDevices();
     return rows;

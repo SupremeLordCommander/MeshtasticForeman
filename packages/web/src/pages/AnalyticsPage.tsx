@@ -102,6 +102,21 @@ interface NeighborLink {
   lastSeen: string;
 }
 
+interface PacketLogEntry {
+  id:          string;
+  packetId:    number;
+  deviceId:    string;
+  fromNodeId:  number;
+  toNodeId:    number;
+  portnumName: string;
+  rxTime:      string;
+  rxSnr:       number | null;
+  rxRssi:      number | null;
+  hopLimit:    number | null;
+  hopStart:    number | null;
+  viaMqtt:     boolean;
+}
+
 interface LinkQualityEntry {
   fromNodeId:   number;
   toNodeId:     number;
@@ -948,9 +963,11 @@ function TelemetryTab({ nodes, mqttNodes }: { nodes: NodeInfo[]; mqttNodes: Mqtt
 // ---------------------------------------------------------------------------
 
 function PacketsTab() {
-  const [since,    setSince]    = useState("24h");
-  const [portnum,  setPortnum]  = useState<PortnumCount[] | null>(null);
-  const [timeline, setTimeline] = useState<PacketTimelinePoint[] | null>(null);
+  const [since,      setSince]      = useState("24h");
+  const [portnum,    setPortnum]    = useState<PortnumCount[] | null>(null);
+  const [timeline,   setTimeline]   = useState<PacketTimelinePoint[] | null>(null);
+  const [logFilter,  setLogFilter]  = useState("");
+  const [packetLog,  setPacketLog]  = useState<PacketLogEntry[] | null>(null);
 
   const bucket = since === "7d" ? "hour" : "hour";
 
@@ -965,6 +982,22 @@ function PacketsTab() {
     apiFetch<PacketTimelinePoint[]>(`/api/analytics/packet-timeline?since=${since}&bucket=${bucket}`)
       .then(setTimeline).catch(() => setTimeline([]));
   }, [since, bucket]);
+
+  useEffect(() => {
+    setPacketLog(null);
+    const params = new URLSearchParams({ since, limit: "200" });
+    if (logFilter) params.set("portnum", logFilter);
+    apiFetch<PacketLogEntry[]>(`/api/analytics/packet-log?${params}`)
+      .then(setPacketLog).catch(() => setPacketLog([]));
+  }, [since, logFilter]);
+
+  function nodeHex(id: number) { return `!${id.toString(16).padStart(8, "0")}`; }
+
+  function handleCsvExport() {
+    const params = new URLSearchParams({ since });
+    if (logFilter) params.set("portnum", logFilter);
+    window.open(`/api/analytics/packet-log.csv?${params}`, "_blank");
+  }
 
   // Top 6 portnums for the area chart; rest → "Other"
   const topPortnums = useMemo(() => {
@@ -1041,6 +1074,62 @@ function PacketsTab() {
               ))}
             </AreaChart>
           </ResponsiveContainer>
+        )}
+      </ChartCard>
+
+      {/* Raw Packet Log */}
+      <ChartCard title="Packet Log" fullWidth>
+        <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", marginBottom: "0.6rem", flexWrap: "wrap" }}>
+          <select
+            value={logFilter}
+            onChange={(e) => setLogFilter(e.target.value)}
+            style={{ background: "#1e293b", color: "#94a3b8", border: "1px solid #334155", borderRadius: "0.3rem", padding: "0.2rem 0.4rem", fontSize: "0.7rem", fontFamily: "monospace" }}
+          >
+            <option value="">All types</option>
+            {(portnum ?? []).map((p) => (
+              <option key={p.portnumName} value={p.portnumName}>{p.portnumName}</option>
+            ))}
+          </select>
+          <span style={{ color: "#64748b", fontSize: "0.7rem", fontFamily: "monospace", flex: 1 }}>
+            {packetLog !== null ? `${packetLog.length} rows (latest 200)` : "loading…"}
+          </span>
+          <button
+            onClick={handleCsvExport}
+            style={{ background: "#1e3a5f", color: "#93c5fd", border: "1px solid #3b82f6", borderRadius: "0.3rem", padding: "0.2rem 0.6rem", fontSize: "0.7rem", fontFamily: "monospace", cursor: "pointer" }}
+          >
+            Export CSV
+          </button>
+        </div>
+        {packetLog === null ? <Loading /> : packetLog.length === 0 ? <Empty message="No packets in this time window." /> : (
+          <div style={{ overflowX: "auto", maxHeight: "400px", overflowY: "auto" }}>
+            <table style={{ borderCollapse: "collapse", fontFamily: "monospace", fontSize: "0.65rem", width: "100%" }}>
+              <thead>
+                <tr style={{ background: "#1e293b", position: "sticky", top: 0 }}>
+                  {["Time", "From", "To", "Type", "SNR", "RSSI", "Hops", "MQTT"].map((h) => (
+                    <th key={h} style={{ padding: "0.3rem 0.5rem", color: "#94a3b8", textAlign: "left", borderBottom: "1px solid #334155", whiteSpace: "nowrap" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {packetLog.map((p) => (
+                  <tr key={p.id} style={{ borderBottom: "1px solid #1e293b" }}>
+                    <td style={styles.logCell}>{new Date(p.rxTime).toLocaleTimeString()}</td>
+                    <td style={styles.logCell}>{nodeHex(p.fromNodeId)}</td>
+                    <td style={styles.logCell}>{nodeHex(p.toNodeId)}</td>
+                    <td style={{ ...styles.logCell, color: "#7dd3fc" }}>{p.portnumName.replace(/_APP$/, "")}</td>
+                    <td style={{ ...styles.logCell, color: p.rxSnr != null ? (p.rxSnr > 0 ? "#4ade80" : p.rxSnr > -10 ? "#fbbf24" : "#f87171") : "#475569" }}>
+                      {p.rxSnr != null ? `${p.rxSnr.toFixed(1)}` : "—"}
+                    </td>
+                    <td style={{ ...styles.logCell, color: "#94a3b8" }}>{p.rxRssi != null ? p.rxRssi : "—"}</td>
+                    <td style={{ ...styles.logCell, color: "#94a3b8" }}>
+                      {p.hopLimit != null && p.hopStart != null ? `${p.hopStart - p.hopLimit}/${p.hopStart}` : p.hopLimit ?? "—"}
+                    </td>
+                    <td style={{ ...styles.logCell, color: p.viaMqtt ? "#818cf8" : "#334155" }}>{p.viaMqtt ? "yes" : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </ChartCard>
     </div>
@@ -1651,5 +1740,10 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize:  "0.62rem",
     color:     "#64748b",
     border:    "1px solid #0f172a",
+  },
+  logCell: {
+    padding:    "0.25rem 0.5rem",
+    color:      "#94a3b8",
+    whiteSpace: "nowrap" as const,
   },
 };

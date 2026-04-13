@@ -968,6 +968,135 @@ export async function registerAnalyticsRoutes(
       recordedAt:  r.recorded_at,
     }));
   });
+
+  // ── 16. Packet Log ─────────────────────────────────────────────────────────
+  // Raw packet rows for the filterable packet log table and CSV export.
+  //
+  // Query params:
+  //   since    – default "24h"
+  //   deviceId – filter to one device
+  //   portnum  – filter to a portnum_name (e.g. "TEXT_MESSAGE_APP")
+  //   limit    – max rows (default 500, max 5000)
+  //   offset   – for pagination (default 0)
+  //
+  // GET /api/analytics/packet-log        → JSON array
+  // GET /api/analytics/packet-log.csv    → CSV download
+
+  type PacketLogRow = {
+    id: string;
+    packet_id: string;
+    device_id: string;
+    from_node_id: string;
+    to_node_id: string;
+    portnum_name: string;
+    rx_time: string;
+    rx_snr: number | null;
+    rx_rssi: number | null;
+    hop_limit: number | null;
+    hop_start: number | null;
+    via_mqtt: boolean;
+  };
+
+  function buildPacketLogQuery(opts: {
+    since?: string;
+    deviceId?: string;
+    portnum?: string;
+    limit: number;
+    offset: number;
+  }) {
+    const { since, deviceId, portnum, limit, offset } = opts;
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+
+    const sinceDate = parseSince(since);
+    if (sinceDate) {
+      params.push(sinceDate.toISOString());
+      conditions.push(`rx_time >= $${params.length}`);
+    }
+    if (deviceId) {
+      params.push(deviceId);
+      conditions.push(`device_id = $${params.length}`);
+    }
+    if (portnum) {
+      params.push(portnum);
+      conditions.push(`portnum_name = $${params.length}`);
+    }
+
+    const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+    params.push(limit);
+    params.push(offset);
+
+    return {
+      sql: `
+        SELECT id, packet_id, device_id, from_node_id, to_node_id,
+               portnum_name, rx_time, rx_snr, rx_rssi,
+               hop_limit, hop_start, via_mqtt
+        FROM packets
+        ${where}
+        ORDER BY rx_time DESC
+        LIMIT $${params.length - 1} OFFSET $${params.length}
+      `,
+      params,
+    };
+  }
+
+  app.get("/api/analytics/packet-log", async (req) => {
+    const { since = "24h", deviceId, portnum, limit: lStr, offset: oStr } = req.query as {
+      since?: string; deviceId?: string; portnum?: string; limit?: string; offset?: string;
+    };
+    const limit  = Math.min(5_000, Math.max(1, parseInt(lStr  ?? "500",  10) || 500));
+    const offset = Math.max(0, parseInt(oStr ?? "0", 10) || 0);
+
+    const { sql, params } = buildPacketLogQuery({ since, deviceId, portnum, limit, offset });
+    const { rows } = await db.query<PacketLogRow>(sql, params);
+
+    return rows.map((r) => ({
+      id:          r.id,
+      packetId:    Number(r.packet_id),
+      deviceId:    r.device_id,
+      fromNodeId:  Number(r.from_node_id),
+      toNodeId:    Number(r.to_node_id),
+      portnumName: r.portnum_name,
+      rxTime:      new Date(r.rx_time).toISOString(),
+      rxSnr:       r.rx_snr  ?? null,
+      rxRssi:      r.rx_rssi ?? null,
+      hopLimit:    r.hop_limit ?? null,
+      hopStart:    r.hop_start ?? null,
+      viaMqtt:     r.via_mqtt,
+    }));
+  });
+
+  app.get("/api/analytics/packet-log.csv", async (req, reply) => {
+    const { since = "24h", deviceId, portnum } = req.query as {
+      since?: string; deviceId?: string; portnum?: string;
+    };
+    // No pagination for CSV — cap at 50k rows to protect memory
+    const { sql, params } = buildPacketLogQuery({ since, deviceId, portnum, limit: 50_000, offset: 0 });
+    const { rows } = await db.query<PacketLogRow>(sql, params);
+
+    const header = "id,packetId,deviceId,fromNodeId,toNodeId,portnumName,rxTime,rxSnr,rxRssi,hopLimit,hopStart,viaMqtt\n";
+    const body = rows.map((r) =>
+      [
+        r.id,
+        r.packet_id,
+        r.device_id,
+        r.from_node_id,
+        r.to_node_id,
+        r.portnum_name,
+        new Date(r.rx_time).toISOString(),
+        r.rx_snr  ?? "",
+        r.rx_rssi ?? "",
+        r.hop_limit ?? "",
+        r.hop_start ?? "",
+        r.via_mqtt ? "true" : "false",
+      ].join(",")
+    ).join("\n");
+
+    const filename = `packet-log-${since}.csv`;
+    reply.header("Content-Type", "text/csv");
+    reply.header("Content-Disposition", `attachment; filename="${filename}"`);
+    return header + body;
+  });
 }
 
 // ---------------------------------------------------------------------------
