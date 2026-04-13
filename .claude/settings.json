@@ -11,7 +11,8 @@
       "Bash(ls d:/Projects/GitHub/MeshtasticForeman/*.json d:/Projects/GitHub/MeshtasticForeman/.env*)",
       "Bash(curl -s \"https://raw.githubusercontent.com/meshtastic/firmware/develop/src/mesh/NodeDB.cpp\")",
       "Bash(curl -s \"https://raw.githubusercontent.com/meshtastic/firmware/develop/src/gps/GPS.h\")",
-      "WebSearch"
+      "WebSearch",
+      "Bash(python3 -c \"import json,sys; data=json.load\\(sys.stdin\\); [print\\(p['id'], p['name']\\) for p in data]\")"
     ]
   }
 }

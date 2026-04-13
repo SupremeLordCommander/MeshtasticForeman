@@ -198,6 +198,18 @@ async function apiFetch<T>(url: string): Promise<T> {
 const MAP_STYLE =
   import.meta.env.VITE_MAP_STYLE ?? "https://tiles.openfreemap.org/styles/liberty";
 
+// Inject a single keyframe rule for the loading spinner (once per page load).
+if (typeof document !== "undefined" && !document.getElementById("analytics-spinner-kf")) {
+  const s = document.createElement("style");
+  s.id = "analytics-spinner-kf";
+  s.textContent =
+    "@keyframes analytics-spin{to{transform:rotate(360deg)}}" +
+    ".analytics-spinner{width:22px;height:22px;border:2px solid #1e293b;" +
+    "border-top-color:#3b82f6;border-radius:50%;" +
+    "animation:analytics-spin 0.75s linear infinite}";
+  document.head.appendChild(s);
+}
+
 // ---------------------------------------------------------------------------
 // Recharts dark-theme constants
 // ---------------------------------------------------------------------------
@@ -239,8 +251,12 @@ function Empty({ message = "No data" }: { message?: string }) {
   );
 }
 
-function Loading() {
-  return <div style={styles.empty}>Loading…</div>;
+function Loading({ height }: { height?: number } = {}) {
+  return (
+    <div style={{ ...styles.empty, height: height ?? 160 }}>
+      <div className="analytics-spinner" />
+    </div>
+  );
 }
 
 function RangeBtn({ options, value, onChange }: {
@@ -305,11 +321,15 @@ function SignalTab({ nodes, mqttNodes }: { nodes: NodeInfo[]; mqttNodes: MqttNod
 
   const hasData = snrData !== null && snrData.length > 0;
 
+  const snrEmptyMsg =
+    "No SNR/RSSI data recorded. Signal metrics are only captured when packets " +
+    "are received directly over radio — MQTT-relayed packets do not carry rx_snr/rx_rssi.";
+
   return (
     <div style={styles.grid}>
       <ChartCard title="SNR over Time (dB)" fullWidth>
         <RangeBtn options={["1h","6h","24h","7d"]} value={since} onChange={setSince} />
-        {snrData === null ? <Loading /> : !hasData ? <Empty /> : (
+        {snrData === null ? <Loading /> : !hasData ? <Empty message={snrEmptyMsg} /> : (
           <ResponsiveContainer width="100%" height={260}>
             <LineChart data={pivotedSnr}>
               <CartesianGrid strokeDasharray="3 3" stroke={GRID_COLOR} />
@@ -333,7 +353,7 @@ function SignalTab({ nodes, mqttNodes }: { nodes: NodeInfo[]; mqttNodes: MqttNod
       </ChartCard>
 
       <ChartCard title="RSSI over Time (dBm)" fullWidth>
-        {snrData === null ? <Loading /> : !hasData ? <Empty /> : (
+        {snrData === null ? <Loading /> : !hasData ? <Empty message={snrEmptyMsg} /> : (
           <ResponsiveContainer width="100%" height={260}>
             <LineChart data={pivotedRssi}>
               <CartesianGrid strokeDasharray="3 3" stroke={GRID_COLOR} />
@@ -723,8 +743,8 @@ function NetworkTab({ nodes, mqttNodes }: { nodes: NodeInfo[]; mqttNodes: MqttNo
         </div>
         <div ref={neighborRef} style={{ background: "#020617", borderRadius: "0.375rem", overflow: "hidden" }}>
           {neighbors === null
-            ? <div style={{ height: 420, display: "flex", alignItems: "center", justifyContent: "center", color: "#475569", fontSize: "0.75rem" }}>Loading…</div>
-            : <MeshGraph graphData={neighborGraphData} graphWidth={neighborWidth} emptyMessage="No neighbor data yet — NEIGHBORINFO_APP packets are stored as they arrive" />
+            ? <div style={{ height: 420, display: "flex", alignItems: "center", justifyContent: "center" }}><div className="analytics-spinner" /></div>
+            : <MeshGraph graphData={neighborGraphData} graphWidth={neighborWidth} emptyMessage="No NEIGHBORINFO_APP packets recorded — nodes must have neighbor broadcast enabled and be received directly over radio." />
           }
         </div>
       </ChartCard>
@@ -768,7 +788,7 @@ function NetworkTab({ nodes, mqttNodes }: { nodes: NodeInfo[]; mqttNodes: MqttNo
         )}
         <div ref={tracerouteRef} style={{ background: "#020617", borderRadius: "0.375rem", overflow: "hidden" }}>
           {routes === null
-            ? <div style={{ height: 360, display: "flex", alignItems: "center", justifyContent: "center", color: "#475569", fontSize: "0.75rem" }}>Loading…</div>
+            ? <div style={{ height: 360, display: "flex", alignItems: "center", justifyContent: "center" }}><div className="analytics-spinner" /></div>
             : <MeshGraph graphData={tracerouteGraphData} graphWidth={tracerouteWidth} height={360} emptyMessage="No traceroute data in this window" />
           }
         </div>
@@ -1093,7 +1113,9 @@ function LinkQualityTab({ nodes, mqttNodes }: { nodes: NodeInfo[]; mqttNodes: Mq
       </div>
 
       <ChartCard title="Link Quality Matrix (SNR dB)" fullWidth>
-        {data === null ? <Loading /> : data.length === 0 ? <Empty message="No messages with SNR data yet" /> : (
+        {data === null ? <Loading /> : data.length === 0 ? (
+          <Empty message="No messages with SNR data. Link quality requires packets received directly over radio — MQTT-relayed packets do not carry rx_snr." />
+        ) : (
           <div style={{ overflowX: "auto" }}>
             <table style={{ borderCollapse: "collapse", fontFamily: "monospace", fontSize: "0.65rem" }}>
               <thead>
