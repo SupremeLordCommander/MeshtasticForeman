@@ -379,8 +379,9 @@ export class DeviceManager extends EventEmitter {
       params.push(opts.channelIndex);
     }
     if (opts.toNodeId !== undefined) {
-      query += ` AND to_node_id = $${p++}`;
+      query += ` AND (to_node_id = $${p} OR from_node_id = $${p})`;
       params.push(opts.toNodeId);
+      p++;
     }
     if (opts.before) {
       query += ` AND rx_time < $${p++}`;

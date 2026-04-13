@@ -115,6 +115,13 @@ export function addOptimisticMessage(msg: Message) {
   notify();
 }
 
+export function loadRecentMessages(deviceId: string) {
+  foremanClient.send({
+    type: "messages:request-history",
+    payload: { deviceId, limit: 200 },
+  });
+}
+
 export function loadConversation(deviceId: string, nodeId: number) {
   foremanClient.send({
     type: "messages:request-history",

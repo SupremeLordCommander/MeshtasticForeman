@@ -9,7 +9,7 @@ import { LogsPage } from "./pages/LogsPage.js";
 import { DeviceConfigPage } from "./pages/DeviceConfigPage.js";
 import { MessagesPage } from "./pages/MessagesPage.js";
 import { AnalyticsPage } from "./pages/AnalyticsPage.js";
-import { initMessageStore } from "./store/messages.js";
+import { initMessageStore, loadRecentMessages } from "./store/messages.js";
 import logo from "./assets/logo.png";
 
 // Initialize message store once at module load
@@ -182,6 +182,9 @@ export function App() {
     const off = foremanClient.on((event) => {
       if (event.type === "device:list") {
         setDevices(event.payload);
+        for (const device of event.payload) {
+          loadRecentMessages(device.id);
+        }
       }
       if (event.type === "device:status") {
         setDevices((prev) => {

@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { resolve } from "node:path";
 import type { FastifyInstance } from "fastify";
 import type { WebSocket, RawData } from "ws";
 import type { ServerEvent, ClientCommand, Message, MqttNode, ActivityEntry, LogEntry } from "@foreman/shared";
@@ -9,6 +11,22 @@ import type { MqttGateway } from "../mqtt/gateway.js";
 import type { PGlite } from "@electric-sql/pglite";
 import { activityLog } from "../activity/log.js";
 import { consoleLog } from "../activity/console-log.js";
+
+/**
+ * Updates a key=value pair in the root .env file.
+ * If the key exists, its value is replaced in-place; if not, it is appended.
+ */
+function persistEnvVar(key: string, value: string): void {
+  // The daemon runs from packages/daemon; the .env file is two levels up at the repo root.
+  const envPath = resolve(process.cwd(), "../../.env");
+  if (!existsSync(envPath)) return;
+  const content = readFileSync(envPath, "utf-8");
+  const regex = new RegExp(`^${key}=.*$`, "m");
+  const updated = regex.test(content)
+    ? content.replace(regex, `${key}=${value}`)
+    : `${content}\n${key}=${value}`;
+  writeFileSync(envPath, updated, "utf-8");
+}
 
 /**
  * Single WebSocket endpoint at /ws
@@ -384,6 +402,8 @@ async function handleClientCommand(
         mqttGateway.stop();
         console.log("[ws] mqtt:toggle → stopped");
       }
+      // Persist the new state so the next restart honours the user's choice
+      persistEnvVar("ENABLE_MQTT", enabled ? "true" : "false");
       // Broadcast new status to all clients
       broadcast?.({ type: "mqtt:status", payload: { enabled: mqttGateway.isRunning } });
       break;

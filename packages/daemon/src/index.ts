@@ -102,7 +102,8 @@ async function main() {
   // 3. Device manager (owns all serial/TCP connections)
   const deviceManager = new DeviceManager(db);
 
-  // 4. MQTT gateway (optional — only starts if MQTT_BROKER is set)
+  // 4. MQTT gateway (optional — configured when MQTT_BROKER is set; only
+  //    auto-started when ENABLE_MQTT=true so the system is lightweight by default)
   let mqttGateway: MqttGateway | null = null;
   if (process.env.MQTT_BROKER) {
     mqttGateway = new MqttGateway({
@@ -112,9 +113,13 @@ async function main() {
       password:  process.env.MQTT_PASS ?? "large4cats",
       rootTopic: process.env.MQTT_ROOT ?? "msh/US",
     }, db);
-    mqttGateway.start();
     deviceManager.setMqttGateway(mqttGateway);
-    console.log(`[mqtt] gateway configured → ${process.env.MQTT_BROKER}`);
+    if (process.env.ENABLE_MQTT === "true") {
+      mqttGateway.start();
+      console.log(`[mqtt] gateway started → ${process.env.MQTT_BROKER}`);
+    } else {
+      console.log(`[mqtt] gateway configured (ENABLE_MQTT is not true, not starting) → ${process.env.MQTT_BROKER}`);
+    }
   }
 
   // Auto-connect to device specified in env (takes priority over DB-saved devices)
