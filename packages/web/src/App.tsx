@@ -624,6 +624,8 @@ export function App() {
           setShowMesh={setShowMesh}
           showMqtt={showMqtt}
           setShowMqtt={setShowMqtt}
+          deviceId={devices.find((d) => d.status === "connected")?.id ?? null}
+          onMessage={(nodeId) => { setMessageTarget(nodeId); setTab("messages"); }}
         />
       )}
       {tab === "messages" && (

@@ -6,6 +6,7 @@ import {
   useConversation,
   loadConversation,
   addOptimisticMessage,
+  BROADCAST,
 } from "../store/messages.js";
 
 interface Props {
@@ -25,6 +26,7 @@ function nodeName(
   nodes: NodeInfo[],
   mqttNodes: MqttNode[]
 ): string {
+  if (nodeId === BROADCAST) return "Public Channel";
   const mesh = nodes.find((n) => n.nodeId === nodeId);
   if (mesh?.shortName) return mesh.shortName;
   if (mesh?.longName) return mesh.longName;
@@ -109,7 +111,9 @@ function ThreadView({ nodeId, nodes, mqttNodes, deviceId }: ThreadProps) {
     <div style={styles.thread}>
       <div style={styles.threadHeader}>
         <span style={styles.threadName}>{name}</span>
-        <span style={styles.threadHex}>{nodeHex(nodeId)}</span>
+        {nodeId !== BROADCAST && (
+          <span style={styles.threadHex}>{nodeHex(nodeId)}</span>
+        )}
       </div>
 
       <div style={styles.messageList}>
@@ -118,11 +122,17 @@ function ThreadView({ nodeId, nodes, mqttNodes, deviceId }: ThreadProps) {
         ) : (
           messages.map((m) => {
             const outgoing = m.role === "sent";
+            const isBroadcast = nodeId === BROADCAST;
             return (
               <div key={m.id} style={bubbleWrapStyle(outgoing)}>
                 <div style={bubbleStyle(outgoing, m.role === "relayed")}>
                   {m.role === "relayed" && (
                     <div style={styles.relayedLabel}>relayed</div>
+                  )}
+                  {isBroadcast && !outgoing && (
+                    <div style={styles.senderLabel}>
+                      {nodeName(m.fromNodeId, nodes, mqttNodes)}
+                    </div>
                   )}
                   <div style={{ ...styles.msgText, opacity: m.role === "relayed" ? 0.5 : 1 }}>
                     {m.text ?? <em style={{ color: "#475569" }}>encrypted</em>}
@@ -518,6 +528,12 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: "0.62rem",
     textTransform: "uppercase",
     letterSpacing: "0.06em",
+    marginBottom: "0.15rem",
+  },
+  senderLabel: {
+    color: "#60a5fa",
+    fontSize: "0.7rem",
+    fontWeight: "bold",
     marginBottom: "0.15rem",
   },
   ackPending: {

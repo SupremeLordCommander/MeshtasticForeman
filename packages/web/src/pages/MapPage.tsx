@@ -4,6 +4,8 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import type { NodeInfo, MqttNode } from "@foreman/shared";
 import { foremanClient } from "../ws/client.js";
 
+type PendingMapAction = { nodeId: number; action: "ping" | "traceroute" };
+
 const MAP_STYLE =
   import.meta.env.VITE_MAP_STYLE ?? "https://tiles.openfreemap.org/styles/liberty";
 
@@ -121,13 +123,16 @@ interface Props {
   setShowMesh: (fn: (v: boolean) => boolean) => void;
   showMqtt: boolean;
   setShowMqtt: (fn: (v: boolean) => boolean) => void;
+  deviceId?: string | null;
+  onMessage?: (nodeId: number) => void;
 }
 
-export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, setShowMqtt }: Props) {
+export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, setShowMqtt, deviceId, onMessage }: Props) {
   const [selected, setSelected] = useState<SelectedNode | null>(null);
   const [traceroutes, setTraceroutes] = useState<StoredTraceroute[]>([]);
   const [showTraceroutes, setShowTraceroutes] = useState(true);
   const [ageHours, setAgeHours] = useState(24);
+  const [pendingAction, setPendingAction] = useState<PendingMapAction | null>(null);
 
   // Clear popup when the relevant source is hidden
   useEffect(() => {
@@ -159,11 +164,14 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
     fetchTraceroutes();
   }, [fetchTraceroutes]);
 
-  // Re-fetch when a new traceroute result arrives via WebSocket
+  // Re-fetch when a new traceroute result arrives via WebSocket; clear pending action
   useEffect(() => {
     const off = foremanClient.on((event) => {
       if (event.type === "traceroute:result") {
         fetchTraceroutes();
+        setPendingAction((p) =>
+          p?.action === "traceroute" && p.nodeId === event.payload.nodeId ? null : p
+        );
       }
     });
     return () => { off(); };
@@ -225,13 +233,15 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
     zoom: firstNode ? 10 : 4,
   };
 
-  const handleMeshClick = useCallback((node: NodeInfo) => {
+  const handleMeshClick = useCallback((node: NodeInfo, e: { originalEvent: MouseEvent }) => {
+    e.originalEvent.stopPropagation();
     setSelected((prev) =>
       prev?.source === "mesh" && prev.node.nodeId === node.nodeId ? null : { source: "mesh", node }
     );
   }, []);
 
-  const handleMqttClick = useCallback((node: MqttNode) => {
+  const handleMqttClick = useCallback((node: MqttNode, e: { originalEvent: MouseEvent }) => {
+    e.originalEvent.stopPropagation();
     setSelected((prev) =>
       prev?.source === "mqtt" && prev.node.nodeId === node.nodeId ? null : { source: "mqtt", node }
     );
@@ -252,6 +262,7 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
         style={{ width: "100%", height: "100%" }}
         mapStyle={MAP_STYLE}
         attributionControl={false}
+        onClick={() => setSelected(null)}
       >
         <NavigationControl position="top-right" />
 
@@ -292,7 +303,7 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
               longitude={node.longitude!}
               latitude={node.latitude!}
               anchor="center"
-              onClick={() => handleMeshClick(node)}
+              onClick={(e) => handleMeshClick(node, e)}
             >
               <div
                 title={node.longName ?? nodeHex(node.nodeId)}
@@ -323,7 +334,7 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
               longitude={node.longitude!}
               latitude={node.latitude!}
               anchor="center"
-              onClick={() => handleMqttClick(node)}
+              onClick={(e) => handleMqttClick(node, e)}
             >
               <div
                 title={`[MQTT] ${node.longName ?? nodeHex(node.nodeId)}`}
@@ -354,7 +365,24 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
             style={{ fontFamily: "monospace" }}
           >
             {selected.source === "mesh" ? (
-              <MeshPopup node={selected.node} />
+              <MeshPopup
+                node={selected.node}
+                deviceId={deviceId ?? null}
+                pending={pendingAction?.nodeId === selected.node.nodeId ? pendingAction.action : null}
+                onRequestPosition={() => {
+                  if (!deviceId) return;
+                  setPendingAction({ nodeId: selected.node.nodeId, action: "ping" });
+                  foremanClient.send({ type: "node:request-position", payload: { deviceId, nodeId: selected.node.nodeId } });
+                  setTimeout(() => setPendingAction((p) => p?.nodeId === selected.node.nodeId ? null : p), 15000);
+                }}
+                onTraceroute={() => {
+                  if (!deviceId) return;
+                  setPendingAction({ nodeId: selected.node.nodeId, action: "traceroute" });
+                  foremanClient.send({ type: "node:traceroute", payload: { deviceId, nodeId: selected.node.nodeId } });
+                  setTimeout(() => setPendingAction((p) => p?.nodeId === selected.node.nodeId ? null : p), 30000);
+                }}
+                onMessage={onMessage ? () => { setSelected(null); onMessage(selected.node.nodeId); } : undefined}
+              />
             ) : (
               <MqttPopup node={selected.node} />
             )}
@@ -443,7 +471,16 @@ function ageFilterBtnStyle(active: boolean): React.CSSProperties {
 // Popup components
 // ---------------------------------------------------------------------------
 
-function MeshPopup({ node }: { node: NodeInfo }) {
+interface MeshPopupProps {
+  node: NodeInfo;
+  deviceId: string | null;
+  pending: "ping" | "traceroute" | null;
+  onRequestPosition: () => void;
+  onTraceroute: () => void;
+  onMessage?: () => void;
+}
+
+function MeshPopup({ node, deviceId, pending, onRequestPosition, onTraceroute, onMessage }: MeshPopupProps) {
   return (
     <div style={popupStyles.popup}>
       <div style={popupStyles.name}>{node.longName ?? nodeHex(node.nodeId)}</div>
@@ -480,6 +517,30 @@ function MeshPopup({ node }: { node: NodeInfo }) {
           {node.altitude != null && ` (${node.altitude}m)`}
         </span>
       </div>
+
+      {deviceId && (
+        <div style={popupStyles.actions}>
+          <button
+            style={popupActionBtnStyle(pending === "ping")}
+            disabled={!!pending}
+            onClick={onRequestPosition}
+          >
+            {pending === "ping" ? "Requesting…" : "📍 Request Position"}
+          </button>
+          <button
+            style={popupActionBtnStyle(pending === "traceroute")}
+            disabled={!!pending}
+            onClick={onTraceroute}
+          >
+            {pending === "traceroute" ? "Tracing…" : "🔍 Traceroute"}
+          </button>
+          {onMessage && (
+            <button style={popupActionBtnStyle(false)} onClick={onMessage}>
+              ✉ Messages Tab
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -612,10 +673,34 @@ const styles: Record<string, React.CSSProperties> = {
   },
 };
 
+function popupActionBtnStyle(active: boolean): React.CSSProperties {
+  return {
+    display: "block",
+    width: "100%",
+    textAlign: "left",
+    background: active ? "#dbeafe" : "#f1f5f9",
+    border: `1px solid ${active ? "#93c5fd" : "#cbd5e1"}`,
+    color: active ? "#1d4ed8" : "#334155",
+    borderRadius: "0.25rem",
+    padding: "0.3rem 0.5rem",
+    cursor: active ? "not-allowed" : "pointer",
+    fontFamily: "monospace",
+    fontSize: "0.75rem",
+  };
+}
+
 const popupStyles: Record<string, React.CSSProperties> = {
-  popup: { minWidth: "180px", fontSize: "0.8rem", color: "#1e293b" },
+  popup: { minWidth: "200px", fontSize: "0.8rem", color: "#1e293b" },
   name: { fontWeight: "bold", fontSize: "0.9rem", marginBottom: "0.1rem" },
   muted: { color: "#64748b", marginBottom: "0.25rem" },
+  actions: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "0.3rem",
+    marginTop: "0.6rem",
+    paddingTop: "0.5rem",
+    borderTop: "1px solid #e2e8f0",
+  },
   tag: {
     display: "inline-block",
     background: "#dbeafe",
