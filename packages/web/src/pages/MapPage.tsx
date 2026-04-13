@@ -130,7 +130,7 @@ interface Props {
 export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, setShowMqtt, deviceId, onMessage }: Props) {
   const [selected, setSelected] = useState<SelectedNode | null>(null);
   const [traceroutes, setTraceroutes] = useState<StoredTraceroute[]>([]);
-  const [showTraceroutes, setShowTraceroutes] = useState(true);
+  const [showTraceroutes, setShowTraceroutes] = useState(false);
   const [ageHours, setAgeHours] = useState(24);
   const [pendingAction, setPendingAction] = useState<PendingMapAction | null>(null);
 
@@ -392,7 +392,7 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
 
       {/* Age filter + traceroute toggle — top left */}
       <div style={styles.controls}>
-        <span style={styles.controlLabel}>Routes:</span>
+        <span style={styles.controlLabel}>Traceroutes:</span>
         {AGE_OPTIONS.map((opt) => (
           <button
             key={opt.label}

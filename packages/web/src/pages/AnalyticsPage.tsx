@@ -322,8 +322,8 @@ function SignalTab({ nodes, mqttNodes }: { nodes: NodeInfo[]; mqttNodes: MqttNod
   const hasData = snrData !== null && snrData.length > 0;
 
   const snrEmptyMsg =
-    "No SNR/RSSI data recorded. Signal metrics are only captured when packets " +
-    "are received directly over radio — MQTT-relayed packets do not carry rx_snr/rx_rssi.";
+    "No SNR/RSSI data recorded in this time window. Signal metrics require packets " +
+    "received directly over radio — MQTT-relayed packets do not carry rx_snr/rx_rssi.";
 
   return (
     <div style={styles.grid}>

@@ -59,7 +59,9 @@ export async function registerAnalyticsRoutes(
 ) {
 
   // ── 1. SNR History ─────────────────────────────────────────────────────────
-  // Returns time-bucketed average SNR and RSSI per node from the messages table.
+  // Returns time-bucketed average SNR and RSSI per node from the packets table.
+  // Uses packets (not messages) so all packet types contribute signal data —
+  // NodeInfo, position, telemetry, text, etc. — not just text messages.
   // Useful for line charts showing signal quality over time.
   //
   // Query params:
@@ -111,7 +113,7 @@ export async function registerAnalyticsRoutes(
         AVG(rx_snr)::REAL                                            AS snr,
         AVG(rx_rssi)::REAL                                           AS rssi,
         COUNT(*)                                                      AS count
-      FROM messages
+      FROM packets
       ${where}
       GROUP BY 1, 2
       ORDER BY 1 ASC, 2 ASC
