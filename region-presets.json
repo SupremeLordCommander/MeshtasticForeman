@@ -68,6 +68,14 @@
                   "mqtt": { "root": "msh/US/CA/fresnocounty" }
                 }
               }
+            },{
+              "id": "US-CA-SanLuisObispo",
+              "label": "SanLuisObispo County",
+              "settings": {
+                "module": {
+                  "mqtt": { "root": "msh/US/CA/sanluisobispocounty" }
+                }
+              }
             }
           ]
         },

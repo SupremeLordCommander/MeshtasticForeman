@@ -644,7 +644,7 @@ export class MqttGateway extends EventEmitter {
       viaMqtt: false,
     });
 
-    await this._upsertFromData(fromNum, data, rxTime, gatewayId, regionPath,
+    await this._upsertFromData(fromNum, data, rxTime, gatewayId, regionPath, channelName,
       pkt.rxSnr ?? null, pkt.hopLimit ?? null);
   }
 
@@ -654,6 +654,7 @@ export class MqttGateway extends EventEmitter {
     rxTime: string,
     gatewayId: string,
     regionPath: string,
+    channelName: string,
     snr: number | null,
     hopsAway: number | null,
   ): Promise<void> {
