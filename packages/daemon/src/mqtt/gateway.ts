@@ -445,7 +445,7 @@ export class MqttGateway extends EventEmitter {
              distance_m   = 0`,
           [state.nodeNum, lat, lon, alt, rxTime, state.gatewayId, regionPath]
         );
-        await this._emitNodeUpdate(state.nodeNum, rxTime, state.gatewayId, regionPath, null, null);
+        await this._emitNodeUpdate(state.nodeNum, rxTime, state.gatewayId, regionPath, "LongFast", null, null);
         console.log(`[mqtt] self position written to mqtt_nodes: ${lat.toFixed(5)}, ${lon.toFixed(5)}`);
       }
     }
@@ -550,19 +550,19 @@ export class MqttGateway extends EventEmitter {
       node_id: number; long_name: string | null; short_name: string | null;
       hw_model: number | null; public_key: string | null; last_heard: string | null;
       latitude: number | null; longitude: number | null; altitude: number | null;
-      last_gateway: string | null; region_path: string | null;
+      last_gateway: string | null; region_path: string | null; channel_name: string | null;
       snr: number | null; hops_away: number | null; distance_m: number | null;
     }>(
       `SELECT node_id, long_name, short_name, hw_model, public_key, last_heard,
-              latitude, longitude, altitude, last_gateway, region_path, snr, hops_away, distance_m
+              latitude, longitude, altitude, last_gateway, region_path, channel_name, snr, hops_away, distance_m
        FROM mqtt_nodes ORDER BY last_heard DESC NULLS LAST`
     );
     return rows.map((r) => ({
       nodeId: r.node_id, longName: r.long_name, shortName: r.short_name,
       hwModel: r.hw_model, publicKey: r.public_key, lastHeard: r.last_heard,
       latitude: r.latitude, longitude: r.longitude, altitude: r.altitude,
-      lastGateway: r.last_gateway, regionPath: r.region_path, snr: r.snr, hopsAway: r.hops_away,
-      distanceM: r.distance_m,
+      lastGateway: r.last_gateway, regionPath: r.region_path, channelName: r.channel_name,
+      snr: r.snr, hopsAway: r.hops_away, distanceM: r.distance_m,
     }));
   }
 
@@ -667,24 +667,25 @@ export class MqttGateway extends EventEmitter {
 
       await this.db.query(
         `INSERT INTO mqtt_nodes(node_id, long_name, short_name, hw_model, public_key,
-           last_heard, last_gateway, region_path, snr, hops_away)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+           last_heard, last_gateway, region_path, channel_name, snr, hops_away)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
          ON CONFLICT(node_id) DO UPDATE SET
-           long_name    = COALESCE(EXCLUDED.long_name,   mqtt_nodes.long_name),
-           short_name   = COALESCE(EXCLUDED.short_name,  mqtt_nodes.short_name),
-           hw_model     = COALESCE(EXCLUDED.hw_model,    mqtt_nodes.hw_model),
-           public_key   = COALESCE(EXCLUDED.public_key,  mqtt_nodes.public_key),
-           last_heard   = GREATEST(EXCLUDED.last_heard,  mqtt_nodes.last_heard),
+           long_name    = COALESCE(EXCLUDED.long_name,    mqtt_nodes.long_name),
+           short_name   = COALESCE(EXCLUDED.short_name,   mqtt_nodes.short_name),
+           hw_model     = COALESCE(EXCLUDED.hw_model,     mqtt_nodes.hw_model),
+           public_key   = COALESCE(EXCLUDED.public_key,   mqtt_nodes.public_key),
+           last_heard   = GREATEST(EXCLUDED.last_heard,   mqtt_nodes.last_heard),
            last_gateway = EXCLUDED.last_gateway,
            region_path  = EXCLUDED.region_path,
-           snr          = COALESCE(EXCLUDED.snr,         mqtt_nodes.snr),
-           hops_away    = COALESCE(EXCLUDED.hops_away,   mqtt_nodes.hops_away)`,
+           channel_name = EXCLUDED.channel_name,
+           snr          = COALESCE(EXCLUDED.snr,          mqtt_nodes.snr),
+           hops_away    = COALESCE(EXCLUDED.hops_away,    mqtt_nodes.hops_away)`,
         [nodeId, user.longName || null, user.shortName || null,
          user.hwModel ?? null, user.publicKey?.length
            ? Buffer.from(user.publicKey).toString("hex") : null,
-         rxTime, gatewayId, regionPath, snr, hopsAway]
+         rxTime, gatewayId, regionPath, channelName, snr, hopsAway]
       );
-      await this._emitNodeUpdate(nodeId, rxTime, gatewayId, regionPath, snr, hopsAway);
+      await this._emitNodeUpdate(nodeId, rxTime, gatewayId, regionPath, channelName, snr, hopsAway);
 
     } else if (portnum === Protobuf.Portnums.PortNum.POSITION_APP) {
       let pos: Protobuf.Mesh.Position;
@@ -703,8 +704,8 @@ export class MqttGateway extends EventEmitter {
       const distM = own ? this._haversineMeters(own.lat, own.lon, lat, lon) : null;
 
       await this.db.query(
-        `INSERT INTO mqtt_nodes(node_id, latitude, longitude, altitude, last_heard, last_gateway, region_path, snr, hops_away, distance_m)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+        `INSERT INTO mqtt_nodes(node_id, latitude, longitude, altitude, last_heard, last_gateway, region_path, channel_name, snr, hops_away, distance_m)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
          ON CONFLICT(node_id) DO UPDATE SET
            latitude     = EXCLUDED.latitude,
            longitude    = EXCLUDED.longitude,
@@ -712,10 +713,11 @@ export class MqttGateway extends EventEmitter {
            last_heard   = GREATEST(EXCLUDED.last_heard,  mqtt_nodes.last_heard),
            last_gateway = EXCLUDED.last_gateway,
            region_path  = EXCLUDED.region_path,
+           channel_name = EXCLUDED.channel_name,
            snr          = COALESCE(EXCLUDED.snr,         mqtt_nodes.snr),
            hops_away    = COALESCE(EXCLUDED.hops_away,   mqtt_nodes.hops_away),
            distance_m   = COALESCE(EXCLUDED.distance_m,  mqtt_nodes.distance_m)`,
-        [nodeId, lat, lon, alt, rxTime, gatewayId, regionPath, snr, hopsAway, distM]
+        [nodeId, lat, lon, alt, rxTime, gatewayId, regionPath, channelName, snr, hopsAway, distM]
       );
 
       // Also update the local mesh nodes table — MQTT is authoritative for position
@@ -727,27 +729,28 @@ export class MqttGateway extends EventEmitter {
         [lat, lon, alt, rxTime, nodeId]
       );
 
-      await this._emitNodeUpdate(nodeId, rxTime, gatewayId, regionPath, snr, hopsAway);
+      await this._emitNodeUpdate(nodeId, rxTime, gatewayId, regionPath, channelName, snr, hopsAway);
 
     } else {
       // Any other portnum — upsert so an unknown node is created on first contact,
       // then fill in details when NODEINFO / POSITION packets eventually arrive.
       await this.db.query(
-        `INSERT INTO mqtt_nodes(node_id, last_heard, last_gateway, region_path)
-         VALUES ($1, $2, $3, $4)
+        `INSERT INTO mqtt_nodes(node_id, last_heard, last_gateway, region_path, channel_name)
+         VALUES ($1, $2, $3, $4, $5)
          ON CONFLICT(node_id) DO UPDATE SET
            last_heard   = GREATEST(EXCLUDED.last_heard,  mqtt_nodes.last_heard),
            last_gateway = EXCLUDED.last_gateway,
-           region_path  = EXCLUDED.region_path`,
-        [nodeId, rxTime, gatewayId, regionPath]
+           region_path  = EXCLUDED.region_path,
+           channel_name = EXCLUDED.channel_name`,
+        [nodeId, rxTime, gatewayId, regionPath, channelName]
       );
-      await this._emitNodeUpdate(nodeId, rxTime, gatewayId, regionPath, snr, hopsAway);
+      await this._emitNodeUpdate(nodeId, rxTime, gatewayId, regionPath, channelName, snr, hopsAway);
     }
   }
 
   private async _emitNodeUpdate(
     nodeId: number, rxTime: string, gatewayId: string, regionPath: string,
-    snr: number | null, hopsAway: number | null,
+    channelName: string, snr: number | null, hopsAway: number | null,
   ): Promise<void> {
     const { rows } = await this.db.query<{
       node_id: number; long_name: string | null; short_name: string | null;
@@ -765,7 +768,7 @@ export class MqttGateway extends EventEmitter {
       nodeId: r.node_id, longName: r.long_name, shortName: r.short_name,
       hwModel: r.hw_model, publicKey: r.public_key, lastHeard: rxTime,
       latitude: r.latitude, longitude: r.longitude, altitude: r.altitude,
-      lastGateway: gatewayId, regionPath, snr, hopsAway, distanceM: r.distance_m,
+      lastGateway: gatewayId, regionPath, channelName, snr, hopsAway, distanceM: r.distance_m,
     };
     this.emit("mqtt_node:update", node);
   }

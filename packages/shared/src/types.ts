@@ -109,6 +109,9 @@ export interface MqttNode {
   altitude: number | null;
   lastGateway: string | null;
   regionPath: string | null;
+  /** Channel name parsed from the MQTT topic path (e.g. "LongFast", "MediumFast").
+   *  Maps to a modem preset for coverage radius estimation. */
+  channelName: string | null;
   snr: number | null;
   hopsAway: number | null;
   distanceM: number | null;

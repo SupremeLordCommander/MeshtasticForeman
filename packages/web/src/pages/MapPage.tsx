@@ -86,12 +86,26 @@ const MODEM_PRESET_RADIUS_KM: Record<number, number> = {
   7: 12,  // LONG_MODERATE
   8: 1,   // SHORT_TURBO
 };
-const MODEM_PRESET_LABEL: Record<number, string> = {
+export const MODEM_PRESET_LABEL: Record<number, string> = {
   0: "LONG_FAST", 1: "LONG_SLOW", 2: "VERY_LONG_SLOW",
   3: "MEDIUM_SLOW", 4: "MEDIUM_FAST", 5: "SHORT_SLOW",
   6: "SHORT_FAST", 7: "LONG_MODERATE", 8: "SHORT_TURBO",
 };
 const DEFAULT_RADIUS_KM = 10; // LONG_FAST fallback
+
+/** Map channel name strings from MQTT topic paths to modem preset numbers.
+ *  Matching is case-insensitive and ignores underscores/hyphens so both
+ *  "LongFast" (topic) and "LONG_FAST" (enum label) resolve correctly. */
+export function channelNameToPreset(name: string | null | undefined): number | null {
+  if (!name) return null;
+  const key = name.toLowerCase().replace(/[_\-\s]/g, "");
+  const map: Record<string, number> = {
+    longfast: 0, longslow: 1, verylongslow: 2,
+    mediumslow: 3, mediumfast: 4, shortslow: 5,
+    shortfast: 6, longmoderate: 7, shortturbo: 8,
+  };
+  return map[key] ?? null;
+}
 
 /** Always fetch viewsheds at this radius — one cache entry per node regardless of display radius. */
 const TERRAIN_FETCH_RADIUS_KM = 20;
@@ -249,9 +263,11 @@ interface Props {
   onMessage?: (nodeId: number) => void;
   focusedNodeId?: number | null;
   onClearFocusedNode?: () => void;
+  /** Only show coverage for nodes on this modem preset (null = show all). */
+  presetFilter?: number | null;
 }
 
-export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, setShowMqtt, deviceId, deviceConfigs, onMessage, focusedNodeId, onClearFocusedNode }: Props) {
+export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, setShowMqtt, deviceId, deviceConfigs, onMessage, focusedNodeId, onClearFocusedNode, presetFilter = null }: Props) {
   const [selected, setSelected] = useState<SelectedNode | null>(null);
   const [traceroutes, setTraceroutes] = useState<StoredTraceroute[]>([]);
   const [showTraceroutes, setShowTraceroutes] = useState(false);
@@ -269,6 +285,9 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
     if (userPickedRadius) return;
     setCoverageRadiusKm(presetRadiusKm(deviceConfigs ?? new Map(), deviceId));
   }, [deviceId, deviceConfigs]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Tracks nodes whose terrain is currently being force-refreshed via the popup button.
+  const [refreshingTerrainNodes, setRefreshingTerrainNodes] = useState<Set<number>>(new Set());
 
   // Viewshed cache: nodeId → GeoJSON polygon always fetched at TERRAIN_FETCH_RADIUS_KM.
   // One entry per node; display radius is applied via clipViewshedToRadius at render time.
@@ -396,8 +415,13 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
   // preventing the viewshed effect from re-firing on every WebSocket update.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const mappableMesh = useMemo(() => nodes.filter((n) => n.latitude != null && n.longitude != null), [meshGpsKey]);
+  // Exclude any MQTT node whose nodeId is already present in the mesh list —
+  // the mesh copy is authoritative and we don't want duplicate markers/coverage.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const mappableMqtt = useMemo(() => mqttNodes.filter((n) => n.latitude != null && n.longitude != null), [mqttGpsKey]);
+  const mappableMqtt = useMemo(() => {
+    const meshIds = new Set(mappableMesh.map((n) => n.nodeId));
+    return mqttNodes.filter((n) => n.latitude != null && n.longitude != null && !meshIds.has(n.nodeId));
+  }, [mqttGpsKey, meshGpsKey]);
   const allMappable = [...mappableMesh, ...mappableMqtt];
 
   // Fetch terrain viewsheds for all mappable nodes when terrain mode is active.
@@ -464,33 +488,74 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showCoverage, terrainMode, focusedNodeId, mappableMesh, mappableMqtt]);
 
-  // Build GeoJSON coverage layer — terrain polygons when ready, circles otherwise.
-  // viewshedStatus is in deps so the memo refreshes as viewsheds come in.
+  // Build GeoJSON coverage layer.
+  // In terrain mode: only show nodes whose polygon has been computed — no
+  // placeholder circles.  Nodes pop onto the map as their terrain arrives.
+  // In circle mode: show all nodes as geodesic circles immediately.
+  // Each MQTT node uses its own radius derived from its channelName; mesh nodes
+  // use the device config preset.  presetFilter hides nodes not on that preset.
+  // viewshedStatus is in deps so the memo refreshes as terrain data arrives.
   const coverageGeoJson = useMemo<GeoJSON.FeatureCollection>(() => {
     if (!showCoverage) return mkFeatureCollection([]);
-    // In single-node mode show only the focused node; otherwise show all.
-    const nodesToShow = focusedNodeId != null
-      ? [...mappableMesh, ...mappableMqtt].filter((n) => n.nodeId === focusedNodeId)
-      : [...mappableMesh, ...mappableMqtt];
+
+    const meshPreset = (() => {
+      const cfg = deviceConfigs?.get(deviceId ?? "");
+      return (cfg?.radioConfig as { lora?: { modemPreset?: number } } | undefined)?.lora?.modemPreset ?? null;
+    })();
+
     const features: GeoJSON.Feature[] = [];
-    for (const n of nodesToShow) {
+
+    // Helper to get the radius for a given preset number (or fall back to default)
+    const radiusFor = (preset: number | null) =>
+      preset != null ? (MODEM_PRESET_RADIUS_KM[preset] ?? DEFAULT_RADIUS_KM) : DEFAULT_RADIUS_KM;
+
+    // ── Mesh nodes ────────────────────────────────────────────────────────────
+    const meshToShow = focusedNodeId != null
+      ? mappableMesh.filter((n) => n.nodeId === focusedNodeId)
+      : mappableMesh;
+    for (const n of meshToShow) {
+      if (presetFilter != null && meshPreset !== presetFilter) continue;
       const color = nodeColor(n.nodeId);
       const isFocused = n.nodeId === focusedNodeId;
+      const radius = radiusFor(meshPreset);
       const cached = viewshedCache.current.get(`${n.nodeId}`);
-      if (terrainMode && cached) {
-        // Clip 20km polygon down to the display radius when needed
-        const poly = coverageRadiusKm < TERRAIN_FETCH_RADIUS_KM
-          ? clipViewshedToRadius(cached, n.latitude!, n.longitude!, coverageRadiusKm)
+      if (terrainMode) {
+        if (!cached) continue;
+        const poly = radius < TERRAIN_FETCH_RADIUS_KM
+          ? clipViewshedToRadius(cached, n.latitude!, n.longitude!, radius)
           : cached;
         features.push({ ...poly, properties: { ...poly.properties, color, focused: isFocused ? 1 : 0 } });
       } else {
-        // Fallback: simple geodesic circle (also shown while viewshed is loading)
-        features.push(buildCoverageCircle(n.longitude!, n.latitude!, coverageRadiusKm, color, 64, isFocused));
+        features.push(buildCoverageCircle(n.longitude!, n.latitude!, radius, color, 64, isFocused));
       }
     }
+
+    // ── MQTT nodes ────────────────────────────────────────────────────────────
+    if (showMqtt) {
+      const mqttToShow = focusedNodeId != null
+        ? mappableMqtt.filter((n) => n.nodeId === focusedNodeId)
+        : mappableMqtt;
+      for (const n of mqttToShow) {
+        const nodePreset = channelNameToPreset(n.channelName);
+        if (presetFilter != null && nodePreset !== presetFilter) continue;
+        const color = nodeColor(n.nodeId);
+        const isFocused = n.nodeId === focusedNodeId;
+        const radius = radiusFor(nodePreset);
+        const cached = viewshedCache.current.get(`${n.nodeId}`);
+        if (terrainMode) {
+          if (!cached) continue;
+          const poly = radius < TERRAIN_FETCH_RADIUS_KM
+            ? clipViewshedToRadius(cached, n.latitude!, n.longitude!, radius)
+            : cached;
+          features.push({ ...poly, properties: { ...poly.properties, color, focused: isFocused ? 1 : 0 } });
+        } else {
+          features.push(buildCoverageCircle(n.longitude!, n.latitude!, radius, color, 64, isFocused));
+        }
+      }
+    }
+
     return mkFeatureCollection(features);
-  // viewshedStatus triggers re-evaluation as terrain data arrives
-  }, [showCoverage, terrainMode, coverageRadiusKm, focusedNodeId, mappableMesh, mappableMqtt, viewshedStatus]);
+  }, [showCoverage, terrainMode, coverageRadiusKm, focusedNodeId, mappableMesh, mappableMqtt, showMqtt, presetFilter, deviceId, deviceConfigs, viewshedStatus]);
 
   const firstNode = allMappable[0];
   const initialView = {
@@ -642,7 +707,39 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
           );
         })}
 
-        {selected && selectedLon != null && selectedLat != null && (
+        {selected && selectedLon != null && selectedLat != null && (() => {
+          // Build a refresh callback only when terrain mode is on and the node
+          // has a known position (needed to key the viewshed_cache row).
+          const refreshTerrain = (terrainMode && selected.source === "mesh" && selected.node.latitude != null && selected.node.longitude != null)
+            ? async () => {
+                const n = selected.node;
+                const nodeId = n.nodeId;
+                setRefreshingTerrainNodes((prev) => new Set(prev).add(nodeId));
+                // 1. Evict the DB-cached viewshed polygon for this position
+                await fetch(
+                  `/api/coverage/viewshed?lat=${n.latitude}&lon=${n.longitude}&radiusKm=${TERRAIN_FETCH_RADIUS_KM}`,
+                  { method: "DELETE" },
+                ).catch(() => {/* ignore — we'll re-fetch regardless */});
+                // 2. Drop the in-memory polygon so the fetch loop doesn't skip it
+                viewshedCache.current.delete(`${nodeId}`);
+                // 3. Fetch the fresh viewshed directly (bypasses the loop queue)
+                const antennaM = n.altitude != null ? n.altitude + 2 : 2;
+                const url = `/api/coverage/viewshed?lat=${n.latitude}&lon=${n.longitude}&radiusKm=${TERRAIN_FETCH_RADIUS_KM}&altitudeM=${antennaM}`;
+                try {
+                  const r = await fetch(url);
+                  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                  const geojson = await r.json() as GeoJSON.Feature<GeoJSON.Polygon>;
+                  viewshedCache.current.set(`${nodeId}`, geojson);
+                  setViewshedStatus((prev) => new Map(prev).set(nodeId, "ready"));
+                } catch {
+                  setViewshedStatus((prev) => new Map(prev).set(nodeId, "error"));
+                } finally {
+                  setRefreshingTerrainNodes((prev) => { const s = new Set(prev); s.delete(nodeId); return s; });
+                }
+              }
+            : undefined;
+
+          return (
           <Popup
             longitude={selectedLon}
             latitude={selectedLat}
@@ -671,12 +768,19 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
                   setTimeout(() => setPendingAction((p) => p?.nodeId === selected.node.nodeId ? null : p), 30000);
                 }}
                 onMessage={onMessage ? () => { setSelected(null); onMessage(selected.node.nodeId); } : undefined}
+                onRefreshTerrain={refreshTerrain}
+                terrainRefreshing={refreshingTerrainNodes.has(selected.node.nodeId)}
               />
             ) : (
-              <MqttPopup node={selected.node} />
+              <MqttPopup
+                node={selected.node}
+                onRefreshTerrain={refreshTerrain}
+                terrainRefreshing={refreshingTerrainNodes.has(selected.node.nodeId)}
+              />
             )}
           </Popup>
-        )}
+          );
+        })()}
       </MapGL>
 
       {/* Age filter + traceroute toggle — top left */}
@@ -856,9 +960,11 @@ interface MeshPopupProps {
   onRequestPosition: () => void;
   onTraceroute: () => void;
   onMessage?: () => void;
+  onRefreshTerrain?: () => void;
+  terrainRefreshing?: boolean;
 }
 
-function MeshPopup({ node, deviceId, pending, onRequestPosition, onTraceroute, onMessage }: MeshPopupProps) {
+function MeshPopup({ node, deviceId, pending, onRequestPosition, onTraceroute, onMessage, onRefreshTerrain, terrainRefreshing }: MeshPopupProps) {
   return (
     <div style={popupStyles.popup}>
       <div style={popupStyles.name}>{node.longName ?? nodeHex(node.nodeId)}</div>
@@ -896,34 +1002,50 @@ function MeshPopup({ node, deviceId, pending, onRequestPosition, onTraceroute, o
         </span>
       </div>
 
-      {deviceId && (
-        <div style={popupStyles.actions}>
-          <button
-            style={popupActionBtnStyle(pending === "ping")}
-            disabled={!!pending}
-            onClick={onRequestPosition}
-          >
-            {pending === "ping" ? "Requesting…" : "📍 Request Position"}
-          </button>
-          <button
-            style={popupActionBtnStyle(pending === "traceroute")}
-            disabled={!!pending}
-            onClick={onTraceroute}
-          >
-            {pending === "traceroute" ? "Tracing…" : "🔍 Traceroute"}
-          </button>
-          {onMessage && (
-            <button style={popupActionBtnStyle(false)} onClick={onMessage}>
-              ✉ Messages Tab
+      <div style={popupStyles.actions}>
+        {deviceId && (
+          <>
+            <button
+              style={popupActionBtnStyle(pending === "ping")}
+              disabled={!!pending}
+              onClick={onRequestPosition}
+            >
+              {pending === "ping" ? "Requesting…" : "📍 Request Position"}
             </button>
-          )}
-        </div>
-      )}
+            <button
+              style={popupActionBtnStyle(pending === "traceroute")}
+              disabled={!!pending}
+              onClick={onTraceroute}
+            >
+              {pending === "traceroute" ? "Tracing…" : "🔍 Traceroute"}
+            </button>
+            {onMessage && (
+              <button style={popupActionBtnStyle(false)} onClick={onMessage}>
+                ✉ Messages Tab
+              </button>
+            )}
+          </>
+        )}
+        {onRefreshTerrain && (
+          <button
+            style={popupActionBtnStyle(terrainRefreshing === true)}
+            disabled={terrainRefreshing}
+            onClick={onRefreshTerrain}
+            title="Clear cached terrain data and recompute line-of-sight from fresh elevation data"
+          >
+            {terrainRefreshing ? "⛰ Recalculating…" : "⛰ Recalculate Terrain"}
+          </button>
+        )}
+      </div>
     </div>
   );
 }
 
-function MqttPopup({ node }: { node: MqttNode }) {
+function MqttPopup({ node, onRefreshTerrain, terrainRefreshing }: {
+  node: MqttNode;
+  onRefreshTerrain?: () => void;
+  terrainRefreshing?: boolean;
+}) {
   return (
     <div style={popupStyles.popup}>
       <div style={popupStyles.name}>{node.longName ?? nodeHex(node.nodeId)}</div>
@@ -959,6 +1081,18 @@ function MqttPopup({ node }: { node: MqttNode }) {
           {node.altitude != null && ` (${node.altitude}m)`}
         </span>
       </div>
+      {onRefreshTerrain && (
+        <div style={popupStyles.actions}>
+          <button
+            style={popupActionBtnStyle(terrainRefreshing === true)}
+            disabled={terrainRefreshing}
+            onClick={onRefreshTerrain}
+            title="Clear cached terrain data and recompute line-of-sight from fresh elevation data"
+          >
+            {terrainRefreshing ? "⛰ Recalculating…" : "⛰ Recalculate Terrain"}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

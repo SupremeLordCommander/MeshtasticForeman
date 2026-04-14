@@ -13,9 +13,9 @@ const EARTH_RADIUS_EFF_M = 8_500_000;
 const ELEVATION_API_URL =
   process.env.ELEVATION_API_URL ?? "https://api.open-elevation.com/api/v1/lookup";
 
-/** Persist elevation lookups for 30 days.  Terrain changes negligibly over
+/** Persist elevation lookups for 6 months.  Terrain changes negligibly over
  *  that window and we want to be a good citizen to public elevation APIs. */
-const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const CACHE_TTL_MS = 180 * 24 * 60 * 60 * 1000;
 
 /** Max points per API request — smaller batches reduce 429 risk. */
 const ELEVATION_CHUNK_SIZE = 100;
@@ -344,5 +344,37 @@ export async function registerCoverageRoutes(app: FastifyInstance, db: PGlite) {
     );
 
     return feature;
+  });
+
+  /**
+   * DELETE /api/coverage/viewshed
+   *
+   * Evicts the cached viewshed polygon for a given position so the next GET
+   * recomputes it from scratch (re-fetching elevation data if needed).
+   *
+   * Query params:
+   *   lat      – node latitude  (required)
+   *   lon      – node longitude (required)
+   *   radiusKm – must match the radius used when the polygon was cached (default 20)
+   */
+  app.delete("/api/coverage/viewshed", async (req, reply) => {
+    const q = req.query as Record<string, string | undefined>;
+    const lat      = Number(q.lat);
+    const lon      = Number(q.lon);
+    const radiusKm = Number(q.radiusKm ?? 20);
+
+    if (!isFinite(lat) || !isFinite(lon)) {
+      return reply.status(400).send({ error: "Invalid lat/lon" });
+    }
+
+    const latKey = lat.toFixed(2);
+    const lonKey = lon.toFixed(2);
+
+    await db.query(
+      `DELETE FROM viewshed_cache WHERE lat_key = $1 AND lon_key = $2 AND radius_km = $3`,
+      [latKey, lonKey, radiusKm],
+    );
+
+    return reply.status(204).send();
   });
 }
