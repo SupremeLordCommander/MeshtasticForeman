@@ -42,13 +42,31 @@
                   "lora": { "modemPreset": 4 }
                 },
                 "module": {
-                  "mqtt": { "root": "msh/US/CA/BayArea" }
+                  "mqtt": { "root": "msh/US/CA/bayarea" }
                 }
               },
               "mqttDefaults": {
                 "address": "mqtt.bayme.sh",
                 "username": "",
                 "password": ""
+              }
+            },
+            {
+              "id": "US-CA-SacValley",
+              "label": "Sacramento County",
+              "settings": {
+                "module": {
+                  "mqtt": { "root": "msh/US/CA/SacValley" }
+                }
+              }
+            },
+            {
+              "id": "US-CA-FresnoCounty",
+              "label": "Fresno County",
+              "settings": {
+                "module": {
+                  "mqtt": { "root": "msh/US/CA/fresnocounty" }
+                }
               }
             }
           ]

@@ -233,7 +233,7 @@ const migrations: string[] = [
 
   /* 013 – elevation_cache: persisted terrain elevation lookups.
             Keyed by lat/lon rounded to 4 decimal places (~11 m precision).
-            Cached for 30 days — elevation data changes negligibly over that
+            Cached for 6 months — elevation data changes negligibly over that
             window and we want to be a good citizen to public elevation APIs. */
   `
   CREATE TABLE IF NOT EXISTS elevation_cache (
@@ -249,7 +249,7 @@ const migrations: string[] = [
             Keyed by lat/lon rounded to 2 decimal places (~1 km precision) plus
             radiusKm, so a node that hasn't moved more than ~1 km reuses the
             same polygon without re-fetching elevation or re-running the LOS
-            algorithm.  Cached for 30 days. */
+            algorithm.  Cached for 6 months. */
   `
   CREATE TABLE IF NOT EXISTS viewshed_cache (
     lat_key    TEXT NOT NULL,
@@ -260,6 +260,11 @@ const migrations: string[] = [
     PRIMARY KEY (lat_key, lon_key, radius_km)
   );
   `,
+
+  /* 015 – mqtt_nodes: add channel_name column to store the Meshtastic channel
+            name parsed from the MQTT topic (e.g. "LongFast", "MediumFast").
+            Used to derive the modem preset for coverage radius estimation. */
+  `ALTER TABLE mqtt_nodes ADD COLUMN IF NOT EXISTS channel_name TEXT;`,
 ];
 
 export async function runMigrations(db: PGlite) {
