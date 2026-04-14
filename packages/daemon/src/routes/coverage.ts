@@ -17,6 +17,15 @@ const ELEVATION_API_URL =
  *  that window and we want to be a good citizen to public elevation APIs. */
 const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
+/** Max points per API request — smaller batches reduce 429 risk. */
+const ELEVATION_CHUNK_SIZE = 100;
+
+/** Delay between consecutive API chunks (ms) to avoid burst rate-limiting. */
+const ELEVATION_CHUNK_DELAY_MS = 250;
+
+/** Max retries on HTTP 429 with exponential back-off. */
+const ELEVATION_MAX_RETRIES = 4;
+
 // ---------------------------------------------------------------------------
 // Elevation cache
 // ---------------------------------------------------------------------------
@@ -60,15 +69,24 @@ async function fetchElevations(
 
   // ── L2: DB cache ──────────────────────────────────────────────────────────
   const cutoff = new Date(Date.now() - CACHE_TTL_MS).toISOString();
-  const keys   = needDb.map((p) => elevKey(p.lat, p.lon));
 
-  // PGlite doesn't support ANY($1::text[]), so build a values list
-  const placeholders = keys.map((_, i) => `$${i + 2}`).join(", ");
+  // Build separate lat/lon arrays so we can match the composite primary key.
+  // (Passing combined "lat,lon" strings into a lat_key IN (...) filter never
+  // matched because lat_key stores only the lat portion — that was the bug.)
+  const latKeys = needDb.map((p) => p.lat.toFixed(4));
+  const lonKeys = needDb.map((p) => p.lon.toFixed(4));
+
+  // Build a VALUES list of (lat, lon) pairs for an IN-style composite match.
+  const pairPlaceholders = needDb.map((_, i) => `($${i * 2 + 2}, $${i * 2 + 3})`).join(", ");
+  const pairParams: unknown[] = [cutoff];
+  for (let i = 0; i < needDb.length; i++) {
+    pairParams.push(latKeys[i], lonKeys[i]);
+  }
   const { rows } = await db.query<{ lat_key: string; lon_key: string; elevation: number }>(
     `SELECT lat_key, lon_key, elevation
      FROM elevation_cache
-     WHERE cached_at >= $1 AND lat_key IN (${placeholders})`,
-    [cutoff, ...keys],
+     WHERE cached_at >= $1 AND (lat_key, lon_key) IN (${pairPlaceholders})`,
+    pairParams,
   );
 
   const dbHit = new Map<string, number>();
@@ -91,17 +109,33 @@ async function fetchElevations(
 
   // ── L3: elevation API ─────────────────────────────────────────────────────
   const now = new Date().toISOString();
-  for (let start = 0; start < needApi.length; start += 500) {
-    const chunk = needApi.slice(start, start + 500);
-    const res = await fetch(ELEVATION_API_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        locations: chunk.map((p) => ({ latitude: p.lat, longitude: p.lon })),
-      }),
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (!res.ok) throw new Error(`Elevation API returned HTTP ${res.status}`);
+  for (let start = 0; start < needApi.length; start += ELEVATION_CHUNK_SIZE) {
+    // Throttle between chunks so we don't burst the public API
+    if (start > 0) {
+      await new Promise((r) => setTimeout(r, ELEVATION_CHUNK_DELAY_MS));
+    }
+
+    const chunk = needApi.slice(start, start + ELEVATION_CHUNK_SIZE);
+
+    // Fetch with exponential back-off on 429
+    let res: Response | undefined;
+    for (let attempt = 0; attempt <= ELEVATION_MAX_RETRIES; attempt++) {
+      if (attempt > 0) {
+        const backoffMs = Math.min(500 * 2 ** (attempt - 1), 8_000);
+        await new Promise((r) => setTimeout(r, backoffMs));
+      }
+      res = await fetch(ELEVATION_API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          locations: chunk.map((p) => ({ latitude: p.lat, longitude: p.lon })),
+        }),
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (res.status !== 429) break;
+      console.warn(`[coverage] Elevation API rate-limited (429), retry ${attempt + 1}/${ELEVATION_MAX_RETRIES}`);
+    }
+    if (!res || !res.ok) throw new Error(`Elevation API returned HTTP ${res?.status ?? "???"}`);
     const data = (await res.json()) as { results: Array<{ elevation: number }> };
 
     // Write results + persist to DB in one upsert
@@ -192,10 +226,27 @@ export async function registerCoverageRoutes(app: FastifyInstance, db: PGlite) {
     const antennaM = Math.max(0, Number(q.altitudeM ?? 2) || 2);
     const radiusKm = Math.min(50, Math.max(0.5, Number(q.radiusKm ?? 10) || 10));
     const numRadials = Math.min(72, Math.max(8, Number(q.radials ?? 36) || 36));
-    const numSteps = 20; // fixed: balances API call volume vs. resolution
+    const numSteps = 15; // fixed: balances API call volume vs. resolution
 
     if (!isFinite(lat) || !isFinite(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
       return reply.status(400).send({ error: "Invalid lat/lon" });
+    }
+
+    // ── Viewshed cache lookup ──────────────────────────────────────────────
+    // Key at ~1 km precision (2 decimal places).  A node that hasn't moved
+    // more than ~1 km reuses the stored polygon — no elevation API calls, no
+    // LOS computation needed.
+    const vsLatKey = lat.toFixed(2);
+    const vsLonKey = lon.toFixed(2);
+    const vsCutoff = new Date(Date.now() - CACHE_TTL_MS).toISOString();
+    const { rows: vsRows } = await db.query<{ geojson: string }>(
+      `SELECT geojson FROM viewshed_cache
+       WHERE lat_key = $1 AND lon_key = $2 AND radius_km = $3 AND cached_at >= $4
+       LIMIT 1`,
+      [vsLatKey, vsLonKey, radiusKm, vsCutoff],
+    );
+    if (vsRows.length > 0) {
+      return JSON.parse(vsRows[0].geojson);
     }
 
     // ── Build sample points ────────────────────────────────────────────────
@@ -277,10 +328,21 @@ export async function registerCoverageRoutes(app: FastifyInstance, db: PGlite) {
     // Close the GeoJSON polygon ring
     boundary.push(boundary[0]);
 
-    return {
+    const feature = {
       type: "Feature",
       properties: { lat, lon, radiusKm, antennaHeightM: antennaM },
       geometry: { type: "Polygon", coordinates: [boundary] },
     };
+
+    // ── Persist computed viewshed polygon ─────────────────────────────────
+    await db.query(
+      `INSERT INTO viewshed_cache (lat_key, lon_key, radius_km, geojson, cached_at)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (lat_key, lon_key, radius_km) DO UPDATE
+         SET geojson = EXCLUDED.geojson, cached_at = EXCLUDED.cached_at`,
+      [vsLatKey, vsLonKey, radiusKm, JSON.stringify(feature), new Date().toISOString()],
+    );
+
+    return feature;
   });
 }

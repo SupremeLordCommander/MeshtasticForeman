@@ -422,26 +422,45 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
     }
     setViewshedStatus(new Map(pending));
 
-    for (const n of allNodes) {
+    // Fetch viewsheds with limited concurrency (3 at a time) rather than firing
+    // all requests at once.  Nodes in the same area share terrain — the first
+    // few responses warm the backend elevation cache so later ones are fast DB
+    // hits.  3 concurrent keeps throughput reasonable without bursting the API.
+    let cancelled = false;
+    const queue = allNodes.filter((n) => !viewshedCache.current.has(`${n.nodeId}`));
+    let qi = 0;
+
+    async function fetchOne(n: typeof allNodes[0]): Promise<void> {
       const key = `${n.nodeId}`;
-      if (viewshedCache.current.has(key)) continue;
       const antennaM = n.altitude != null ? n.altitude + 2 : 2;
       const url = `/api/coverage/viewshed?lat=${n.latitude}&lon=${n.longitude}&radiusKm=${TERRAIN_FETCH_RADIUS_KM}&altitudeM=${antennaM}`;
-      fetch(url)
-        .then((r) => {
-          if (!r.ok) throw new Error(`HTTP ${r.status}`);
-          return r.json() as Promise<GeoJSON.Feature<GeoJSON.Polygon>>;
-        })
-        .then((geojson) => {
-          viewshedCache.current.set(key, geojson);
-          pending.set(n.nodeId, "ready");
-          setViewshedStatus(new Map(pending));
-        })
-        .catch(() => {
-          pending.set(n.nodeId, "error");
-          setViewshedStatus(new Map(pending));
-        });
+      try {
+        const r = await fetch(url);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const geojson = await r.json() as GeoJSON.Feature<GeoJSON.Polygon>;
+        // Always write to cache — preserves work even if cancelled so a
+        // subsequent toggle-on skips nodes already fetched.
+        viewshedCache.current.set(key, geojson);
+        pending.set(n.nodeId, "ready");
+      } catch {
+        pending.set(n.nodeId, "error");
+      }
+      if (!cancelled) setViewshedStatus(new Map(pending));
     }
+
+    async function worker(): Promise<void> {
+      while (true) {
+        if (cancelled) break;
+        const idx = qi++;
+        if (idx >= queue.length) break;
+        await fetchOne(queue[idx]);
+      }
+    }
+
+    const CONCURRENCY = 3;
+    Promise.all(Array.from({ length: CONCURRENCY }, worker));
+
+    return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showCoverage, terrainMode, focusedNodeId, mappableMesh, mappableMqtt]);
 
@@ -754,13 +773,13 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
           const errors = [...viewshedStatus.values()].filter((s) => s === "error").length;
           if (total === 0) return null;
           if (done < total) return (
-            <span style={{ color: "#86efac", fontSize: "0.7rem", fontFamily: "monospace" }}>
-              {done}/{total}…
+            <span style={{ color: "#fbbf24", fontSize: "0.7rem", fontFamily: "monospace" }} title="Computing terrain line-of-sight for each node. First run fetches elevation data from the internet; subsequent runs use the local cache and are instant.">
+              ⛰ Computing terrain… {done}/{total}
             </span>
           );
           return (
             <span style={{ color: errors > 0 ? "#fca5a5" : "#86efac", fontSize: "0.7rem", fontFamily: "monospace" }}>
-              {errors > 0 ? `${errors} failed` : "ready"}
+              {errors > 0 ? `⛰ ${errors} failed` : "⛰ ready"}
             </span>
           );
         })()}

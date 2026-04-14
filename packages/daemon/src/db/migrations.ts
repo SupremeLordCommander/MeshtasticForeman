@@ -244,6 +244,22 @@ const migrations: string[] = [
     PRIMARY KEY (lat_key, lon_key)
   );
   `,
+
+  /* 014 – viewshed_cache: persisted LOS polygon results.
+            Keyed by lat/lon rounded to 2 decimal places (~1 km precision) plus
+            radiusKm, so a node that hasn't moved more than ~1 km reuses the
+            same polygon without re-fetching elevation or re-running the LOS
+            algorithm.  Cached for 30 days. */
+  `
+  CREATE TABLE IF NOT EXISTS viewshed_cache (
+    lat_key    TEXT NOT NULL,
+    lon_key    TEXT NOT NULL,
+    radius_km  REAL NOT NULL,
+    geojson    TEXT NOT NULL,
+    cached_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (lat_key, lon_key, radius_km)
+  );
+  `,
 ];
 
 export async function runMigrations(db: PGlite) {
