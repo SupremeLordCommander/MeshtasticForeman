@@ -3,6 +3,8 @@ import MapGL, { type MapRef, Marker, Popup, NavigationControl, Source, Layer } f
 import "maplibre-gl/dist/maplibre-gl.css";
 import type { NodeInfo, MqttNode, DeviceConfig } from "@foreman/shared";
 import { foremanClient } from "../ws/client.js";
+import { union } from "@turf/union";
+import { featureCollection } from "@turf/helpers";
 
 type PendingMapAction = { nodeId: number; action: "ping" | "traceroute" };
 
@@ -277,6 +279,7 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
   const [pendingAction, setPendingAction] = useState<PendingMapAction | null>(null);
   const [showCoverage, setShowCoverage] = useState(false);
   const [terrainMode, setTerrainMode] = useState(false);
+  const [coverageUnion, setCoverageUnion] = useState(true);
   const [coverageExpanded, setCoverageExpanded] = useState(false);
   const [coverageMqtt, setCoverageMqtt] = useState(false);
   const [coverageRadiusKm, setCoverageRadiusKm] = useState(() =>
@@ -289,6 +292,11 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
     if (userPickedRadius) return;
     setCoverageRadiusKm(presetRadiusKm(deviceConfigs ?? new Map(), deviceId));
   }, [deviceId, deviceConfigs]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Node focused from within the map (popup coverage button). Takes priority over
+  // the prop-based focusedNodeId which comes from the Nodes tab.
+  const [localFocusedNodeId, setLocalFocusedNodeId] = useState<number | null>(null);
+  const effectiveFocusedNodeId = localFocusedNodeId ?? focusedNodeId ?? null;
 
   // All unique modem presets present in current nodes — used to render preset filter buttons.
   const availablePresets = useMemo(() => {
@@ -312,20 +320,20 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
   const [viewshedStatus, setViewshedStatus] = useState<Map<number, "loading" | "ready" | "error">>(new Map());
   const mapRef = useRef<MapRef>(null);
 
-  // When a node is focused from the Nodes tab: enable terrain coverage and fly to it.
+  // When a node is focused (from Nodes tab or map popup): enable terrain coverage and fly to it.
   useEffect(() => {
-    if (focusedNodeId == null) return;
+    if (effectiveFocusedNodeId == null) return;
     setShowCoverage(true);
     setTerrainMode(true);
-  }, [focusedNodeId]);
+  }, [effectiveFocusedNodeId]);
 
   useEffect(() => {
-    if (focusedNodeId == null) return;
-    const node = [...mappableMesh, ...mappableMqtt].find((n) => n.nodeId === focusedNodeId);
+    if (effectiveFocusedNodeId == null) return;
+    const node = [...mappableMesh, ...mappableMqtt].find((n) => n.nodeId === effectiveFocusedNodeId);
     if (!node?.longitude || !node?.latitude) return;
     mapRef.current?.flyTo({ center: [node.longitude, node.latitude], zoom: 12, duration: 1200 });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focusedNodeId]);
+  }, [effectiveFocusedNodeId]);
 
   // Clear popup when the relevant source is hidden
   useEffect(() => {
@@ -441,6 +449,14 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
   }, [mqttGpsKey, meshGpsKey]);
   const allMappable = [...mappableMesh, ...mappableMqtt];
 
+  // Name of the currently focused node (for display in coverage panel)
+  const effectiveFocusedNode = effectiveFocusedNodeId != null
+    ? allMappable.find((n) => n.nodeId === effectiveFocusedNodeId)
+    : undefined;
+  const effectiveFocusedNodeName = effectiveFocusedNode
+    ? (effectiveFocusedNode.longName ?? effectiveFocusedNode.shortName ?? nodeHex(effectiveFocusedNode.nodeId))
+    : null;
+
   // Fetch terrain viewsheds for all mappable nodes when terrain mode is active.
   // Placed after mappableMesh/mappableMqtt so those variables are in scope.
   useEffect(() => {
@@ -449,8 +465,8 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
       return;
     }
     // In single-node mode only fetch for that node; otherwise fetch all.
-    const allNodes = focusedNodeId != null
-      ? [...mappableMesh, ...mappableMqtt].filter((n) => n.nodeId === focusedNodeId)
+    const allNodes = effectiveFocusedNodeId != null
+      ? [...mappableMesh, ...mappableMqtt].filter((n) => n.nodeId === effectiveFocusedNodeId)
       : [...mappableMesh, ...mappableMqtt];
     if (allNodes.length === 0) return;
 
@@ -503,7 +519,7 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
 
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showCoverage, terrainMode, focusedNodeId, mappableMesh, mappableMqtt]);
+  }, [showCoverage, terrainMode, effectiveFocusedNodeId, mappableMesh, mappableMqtt]);
 
   // Build GeoJSON coverage layer.
   // In terrain mode: only show nodes whose polygon has been computed — no
@@ -531,13 +547,13 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
         : (preset != null ? (MODEM_PRESET_RADIUS_KM[preset] ?? DEFAULT_RADIUS_KM) : DEFAULT_RADIUS_KM);
 
     // ── Mesh nodes ────────────────────────────────────────────────────────────
-    const meshToShow = focusedNodeId != null
-      ? mappableMesh.filter((n) => n.nodeId === focusedNodeId)
+    const meshToShow = effectiveFocusedNodeId != null
+      ? mappableMesh.filter((n) => n.nodeId === effectiveFocusedNodeId)
       : mappableMesh;
     for (const n of meshToShow) {
       if (presetFilter != null && meshPreset !== presetFilter) continue;
       const color = nodeColor(n.nodeId);
-      const isFocused = n.nodeId === focusedNodeId;
+      const isFocused = n.nodeId === effectiveFocusedNodeId;
       const radius = radiusFor(meshPreset);
       const cached = viewshedCache.current.get(`${n.nodeId}`);
       if (terrainMode) {
@@ -553,14 +569,14 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
 
     // ── MQTT nodes — only included when explicitly enabled in coverage settings ──
     if (showMqtt && coverageMqtt) {
-      const mqttToShow = focusedNodeId != null
-        ? mappableMqtt.filter((n) => n.nodeId === focusedNodeId)
+      const mqttToShow = effectiveFocusedNodeId != null
+        ? mappableMqtt.filter((n) => n.nodeId === effectiveFocusedNodeId)
         : mappableMqtt;
       for (const n of mqttToShow) {
         const nodePreset = channelNameToPreset(n.channelName);
         if (presetFilter != null && nodePreset !== presetFilter) continue;
         const color = nodeColor(n.nodeId);
-        const isFocused = n.nodeId === focusedNodeId;
+        const isFocused = n.nodeId === effectiveFocusedNodeId;
         const radius = radiusFor(nodePreset);
         const cached = viewshedCache.current.get(`${n.nodeId}`);
         if (terrainMode) {
@@ -575,8 +591,35 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
       }
     }
 
+    // ── Separate mode: render each node's polygon individually ───────────────
+    if (!coverageUnion) return mkFeatureCollection(features);
+
+    // ── Union mode: merge all polygons into one shape ─────────────────────────
+    // The result is a single filled area whose outer boundary traces the combined
+    // coverage footprint.  Overlapping regions disappear — no stacked outlines.
+    if (features.length === 0) return mkFeatureCollection([]);
+    if (features.length === 1) {
+      // Single polygon — set consistent fill properties and return as-is.
+      const f = features[0];
+      const isFocused = effectiveFocusedNodeId != null;
+      const color = isFocused ? nodeColor(effectiveFocusedNodeId!) : "#3b82f6";
+      return mkFeatureCollection([{ ...f, properties: { color, focused: isFocused ? 1 : 0 } }]);
+    }
+    try {
+      const unioned = union(
+        featureCollection(features as GeoJSON.Feature<GeoJSON.Polygon | GeoJSON.MultiPolygon>[])
+      );
+      if (unioned) {
+        const isFocused = effectiveFocusedNodeId != null;
+        const color = isFocused ? nodeColor(effectiveFocusedNodeId!) : "#3b82f6";
+        unioned.properties = { color, focused: isFocused ? 1 : 0 };
+        return mkFeatureCollection([unioned]);
+      }
+    } catch {
+      // Union failed (e.g. invalid geometry) — fall back to individual polygons.
+    }
     return mkFeatureCollection(features);
-  }, [showCoverage, terrainMode, coverageRadiusKm, coverageMqtt, focusedNodeId, mappableMesh, mappableMqtt, showMqtt, presetFilter, deviceId, deviceConfigs, viewshedStatus]);
+  }, [showCoverage, terrainMode, coverageRadiusKm, coverageMqtt, coverageUnion, effectiveFocusedNodeId, mappableMesh, mappableMqtt, showMqtt, presetFilter, deviceId, deviceConfigs, viewshedStatus]);
 
   const firstNode = allMappable[0];
   const initialView = {
@@ -619,7 +662,7 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
       >
         <NavigationControl position="top-right" />
 
-        {/* Coverage circles — one per node with GPS */}
+        {/* Coverage layer — union mode renders one merged polygon; separate mode renders per-node. */}
         <Source id="coverage" type="geojson" data={coverageGeoJson}>
           <Layer
             id="coverage-fill"
@@ -634,9 +677,8 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
             type="line"
             paint={{
               "line-color": ["get", "color"],
-              "line-width": ["case", ["==", ["get", "focused"], 1], 2, 1],
-              "line-opacity": ["case", ["==", ["get", "focused"], 1], 0.8, 0.5],
-              "line-dasharray": [4, 2],
+              "line-width": ["case", ["==", ["get", "focused"], 1], 2.5, 1.5],
+              "line-opacity": ["case", ["==", ["get", "focused"], 1], 0.9, 0.65],
             }}
           />
         </Source>
@@ -729,6 +771,13 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
         })}
 
         {selected && selectedLon != null && selectedLat != null && (() => {
+          // Focus this node's coverage from within the map popup.
+          const handleFocusCoverage = () => {
+            setLocalFocusedNodeId(selected.node.nodeId);
+            setShowCoverage(true);
+            setSelected(null);
+          };
+
           // Build a refresh callback only when terrain mode is on and the node
           // has a known position (needed to key the viewshed_cache row).
           const refreshTerrain = (terrainMode && selected.source === "mesh" && selected.node.latitude != null && selected.node.longitude != null)
@@ -789,12 +838,14 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
                   setTimeout(() => setPendingAction((p) => p?.nodeId === selected.node.nodeId ? null : p), 30000);
                 }}
                 onMessage={onMessage ? () => { setSelected(null); onMessage(selected.node.nodeId); } : undefined}
+                onFocusCoverage={selected.node.latitude != null && selected.node.longitude != null ? handleFocusCoverage : undefined}
                 onRefreshTerrain={refreshTerrain}
                 terrainRefreshing={refreshingTerrainNodes.has(selected.node.nodeId)}
               />
             ) : (
               <MqttPopup
                 node={selected.node}
+                onFocusCoverage={selected.node.latitude != null && selected.node.longitude != null ? handleFocusCoverage : undefined}
                 onRefreshTerrain={refreshTerrain}
                 terrainRefreshing={refreshingTerrainNodes.has(selected.node.nodeId)}
               />
@@ -919,6 +970,17 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
 
                 <button
                   style={{
+                    ...ageFilterBtnStyle(coverageUnion),
+                    ...(coverageUnion ? { borderColor: "#a78bfa", color: "#a78bfa", background: "#2e1065" } : {}),
+                  }}
+                  onClick={() => setCoverageUnion((v) => !v)}
+                  title={coverageUnion ? "Switch to separate fills (each node draws its own circle)" : "Switch to union fill (overlapping areas merge into one shape)"}
+                >
+                  {coverageUnion ? "Union" : "Separate"}
+                </button>
+
+                <button
+                  style={{
                     ...ageFilterBtnStyle(showCoverage),
                     ...(showCoverage ? {} : { color: "#64748b" }),
                   }}
@@ -936,14 +998,21 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
                   {coverageExpanded ? "▲" : "▼"}
                 </button>
 
-                {focusedNodeId != null && (
-                  <button
-                    style={{ ...ageFilterBtnStyle(false), borderColor: "#86efac", color: "#86efac" }}
-                    onClick={() => onClearFocusedNode?.()}
-                    title="Return to all-nodes coverage view"
-                  >
-                    ← All nodes
-                  </button>
+                {effectiveFocusedNodeId != null && (
+                  <>
+                    <button
+                      style={{ ...ageFilterBtnStyle(false), borderColor: "#86efac", color: "#86efac" }}
+                      onClick={() => { setLocalFocusedNodeId(null); onClearFocusedNode?.(); }}
+                      title="Return to all-nodes coverage view"
+                    >
+                      ← All nodes
+                    </button>
+                    {effectiveFocusedNodeName && (
+                      <span style={{ color: "#86efac", fontSize: "0.7rem", fontFamily: "monospace", maxWidth: "10rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {effectiveFocusedNodeName}
+                      </span>
+                    )}
+                  </>
                 )}
 
                 {terrainStatus && (
@@ -1050,10 +1119,11 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
           <span style={styles.legendItem}>
             <span style={{
               display: "inline-block", width: "1rem", height: "1rem",
-              borderRadius: terrainMode ? "2px" : "50%",
-              background: "#94a3b833", border: "1px dashed #94a3b8",
+              borderRadius: terrainMode ? "2px" : coverageUnion ? "2px" : "50%",
+              background: coverageUnion ? "#3b82f633" : "#94a3b833",
+              border: `1px solid ${coverageUnion ? "#3b82f6" : "#94a3b8"}`,
             }} />
-            {terrainMode ? "Terrain LOS" : `${coverageRadiusKm}km range`}
+            {terrainMode ? "Terrain LOS" : coverageUnion ? "Coverage (union)" : `${coverageRadiusKm}km range`}
           </span>
         )}
         <span style={{ color: "#64748b" }}>
@@ -1095,11 +1165,12 @@ interface MeshPopupProps {
   onRequestPosition: () => void;
   onTraceroute: () => void;
   onMessage?: () => void;
+  onFocusCoverage?: () => void;
   onRefreshTerrain?: () => void;
   terrainRefreshing?: boolean;
 }
 
-function MeshPopup({ node, deviceId, pending, onRequestPosition, onTraceroute, onMessage, onRefreshTerrain, terrainRefreshing }: MeshPopupProps) {
+function MeshPopup({ node, deviceId, pending, onRequestPosition, onTraceroute, onMessage, onFocusCoverage, onRefreshTerrain, terrainRefreshing }: MeshPopupProps) {
   return (
     <div style={popupStyles.popup}>
       <div style={popupStyles.name}>{node.longName ?? nodeHex(node.nodeId)}</div>
@@ -1138,6 +1209,14 @@ function MeshPopup({ node, deviceId, pending, onRequestPosition, onTraceroute, o
       </div>
 
       <div style={popupStyles.actions}>
+        {onFocusCoverage && (
+          <button
+            style={{ ...popupActionBtnStyle(false), borderColor: "#166534", color: "#15803d" }}
+            onClick={onFocusCoverage}
+          >
+            🗺 Coverage Map
+          </button>
+        )}
         {deviceId && (
           <>
             <button
@@ -1176,8 +1255,9 @@ function MeshPopup({ node, deviceId, pending, onRequestPosition, onTraceroute, o
   );
 }
 
-function MqttPopup({ node, onRefreshTerrain, terrainRefreshing }: {
+function MqttPopup({ node, onFocusCoverage, onRefreshTerrain, terrainRefreshing }: {
   node: MqttNode;
+  onFocusCoverage?: () => void;
   onRefreshTerrain?: () => void;
   terrainRefreshing?: boolean;
 }) {
@@ -1216,16 +1296,26 @@ function MqttPopup({ node, onRefreshTerrain, terrainRefreshing }: {
           {node.altitude != null && ` (${node.altitude}m)`}
         </span>
       </div>
-      {onRefreshTerrain && (
+      {(onFocusCoverage || onRefreshTerrain) && (
         <div style={popupStyles.actions}>
-          <button
-            style={popupActionBtnStyle(terrainRefreshing === true)}
-            disabled={terrainRefreshing}
-            onClick={onRefreshTerrain}
-            title="Clear cached terrain data and recompute line-of-sight from fresh elevation data"
-          >
-            {terrainRefreshing ? "⛰ Recalculating…" : "⛰ Recalculate Terrain"}
-          </button>
+          {onFocusCoverage && (
+            <button
+              style={{ ...popupActionBtnStyle(false), borderColor: "#166534", color: "#15803d" }}
+              onClick={onFocusCoverage}
+            >
+              🗺 Coverage Map
+            </button>
+          )}
+          {onRefreshTerrain && (
+            <button
+              style={popupActionBtnStyle(terrainRefreshing === true)}
+              disabled={terrainRefreshing}
+              onClick={onRefreshTerrain}
+              title="Clear cached terrain data and recompute line-of-sight from fresh elevation data"
+            >
+              {terrainRefreshing ? "⛰ Recalculating…" : "⛰ Recalculate Terrain"}
+            </button>
+          )}
         </div>
       )}
     </div>
