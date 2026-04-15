@@ -120,6 +120,8 @@ export function App() {
   const [deviceConfigs, setDeviceConfigs] = useState<Map<string, DeviceConfig>>(new Map());
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsRef = useRef<HTMLDivElement>(null);
   const [apiDocsOpen, setApiDocsOpen] = useState(false);
   const [gpsOpen, setGpsOpen] = useState(false);
   const gpsRef = useRef<HTMLDivElement>(null);
@@ -154,6 +156,18 @@ export function App() {
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [menuOpen]);
+
+  // Close settings panel on outside click
+  useEffect(() => {
+    if (!settingsOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (settingsRef.current && !settingsRef.current.contains(e.target as Node)) {
+        setSettingsOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [settingsOpen]);
 
   // Close GPS panel on outside click
   useEffect(() => {
@@ -279,6 +293,7 @@ export function App() {
   const navigate = useCallback((t: Tab) => {
     setTab(t);
     setMenuOpen(false);
+    setSettingsOpen(false);
   }, []);
 
   // Merge override fallbacks before passing to pages
@@ -424,6 +439,47 @@ export function App() {
           );
         })()}
 
+        {/* ── MQTT toggle ───────────────────────────────────────────────────── */}
+        <button
+          onClick={toggleMqtt}
+          style={{
+            flexShrink: 0,
+            background: mqttEnabled ? "#166534" : "#1e293b",
+            border: `1px solid ${mqttEnabled ? "#16a34a" : "#ef4444"}`,
+            color: mqttEnabled ? "#4ade80" : "#f87171",
+            padding: "0.2rem 0.7rem",
+            borderRadius: "0.25rem",
+            cursor: "pointer",
+            fontSize: "0.75rem",
+            fontFamily: "monospace",
+          }}
+        >
+          MQTT {mqttEnabled ? "ON" : "OFF"}
+        </button>
+
+        {/* ── Settings menu ─────────────────────────────────────────────────── */}
+        <div ref={settingsRef} style={styles.menuContainer}>
+          <button onClick={() => setSettingsOpen((v) => !v)} style={menuBtnStyle(settingsOpen, true)}>
+            Settings
+            <span style={{ color: "#475569", marginLeft: "0.3rem", fontSize: "0.65rem" }}>▾</span>
+          </button>
+
+          {settingsOpen && (
+            <div style={styles.menuPanel}>
+              <div style={styles.menuSection}>
+                <span style={styles.menuSectionLabel}>Configure</span>
+                <button style={menuNavBtn(tab === "overrides")} onClick={() => navigate("overrides")}>
+                  Overrides
+                  {overrides.size > 0 && <span style={styles.menuCount}>{overrides.size}</span>}
+                </button>
+                <button style={menuNavBtn(tab === "config")} onClick={() => navigate("config")}>
+                  Device Config
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
         {/* ── System menu ───────────────────────────────────────────────────── */}
         <div ref={menuRef} style={styles.menuContainer}>
           <button onClick={() => setMenuOpen((v) => !v)} style={menuBtnStyle(menuOpen, connected)}>
@@ -485,13 +541,6 @@ export function App() {
                 <button style={menuNavBtn(tab === "logs")} onClick={() => navigate("logs")}>
                   Logs
                   {logs.length > 0 && <span style={styles.menuCount}>{logs.length}</span>}
-                </button>
-                <button style={menuNavBtn(tab === "overrides")} onClick={() => navigate("overrides")}>
-                  Overrides
-                  {overrides.size > 0 && <span style={styles.menuCount}>{overrides.size}</span>}
-                </button>
-                <button style={menuNavBtn(tab === "config")} onClick={() => navigate("config")}>
-                  Device Config
                 </button>
                 <button style={menuNavBtn(false)} onClick={() => { setApiDocsOpen(true); setMenuOpen(false); }}>
                   API Docs
@@ -581,23 +630,8 @@ export function App() {
 
               <div style={styles.menuDivider} />
 
-              {/* MQTT + WS status */}
-              <div style={{ ...styles.menuSection, justifyContent: "space-between" }}>
-                <button
-                  onClick={toggleMqtt}
-                  style={{
-                    background: mqttEnabled ? "#166534" : "#1e293b",
-                    border: `1px solid ${mqttEnabled ? "#16a34a" : "#ef4444"}`,
-                    color: mqttEnabled ? "#4ade80" : "#f87171",
-                    padding: "0.2rem 0.7rem",
-                    borderRadius: "0.25rem",
-                    cursor: "pointer",
-                    fontSize: "0.75rem",
-                    fontFamily: "monospace",
-                  }}
-                >
-                  MQTT {mqttEnabled ? "ON" : "OFF"}
-                </button>
+              {/* WS status */}
+              <div style={{ ...styles.menuSection, justifyContent: "flex-end" }}>
                 <span style={{ ...styles.badge, background: connected ? "#22c55e" : "#ef4444" }}>
                   {connected ? "connected" : "disconnected"}
                 </span>
