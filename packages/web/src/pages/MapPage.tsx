@@ -271,8 +271,9 @@ interface Props {
 export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, setShowMqtt, deviceId, deviceConfigs, onMessage, focusedNodeId, onClearFocusedNode, presetFilter = null, setPresetFilter }: Props) {
   const [selected, setSelected] = useState<SelectedNode | null>(null);
   const [traceroutes, setTraceroutes] = useState<StoredTraceroute[]>([]);
-  const [showTraceroutes, setShowTraceroutes] = useState(false);
+  const [showTraceroutes, setShowTraceroutes] = useState(true);
   const [ageHours, setAgeHours] = useState(24);
+  const [tracerouteExpanded, setTracerouteExpanded] = useState(false);
   const [pendingAction, setPendingAction] = useState<PendingMapAction | null>(null);
   const [showCoverage, setShowCoverage] = useState(false);
   const [terrainMode, setTerrainMode] = useState(false);
@@ -803,208 +804,231 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
         })()}
       </MapGL>
 
-      {/* Age filter + traceroute toggle — top left */}
-      <div style={styles.controls}>
-        <span style={styles.controlLabel}>Traceroutes:</span>
-        {AGE_OPTIONS.map((opt) => (
-          <button
-            key={opt.label}
-            style={ageFilterBtnStyle(ageHours === opt.hours && showTraceroutes)}
-            onClick={() => {
-              if (!showTraceroutes) setShowTraceroutes(true);
-              setAgeHours(opt.hours);
-            }}
-          >
-            {opt.label}
-          </button>
-        ))}
-        <button
-          style={ageFilterBtnStyle(!showTraceroutes)}
-          onClick={() => setShowTraceroutes((v) => !v)}
-          title="Hide all traceroute lines"
-        >
-          Off
-        </button>
-        <span style={{ color: "#64748b", fontSize: "0.7rem", marginLeft: "0.25rem" }}>
-          {showTraceroutes ? `${traceroutes.length} route${traceroutes.length !== 1 ? "s" : ""}` : "hidden"}
-        </span>
-      </div>
+      {/* Traceroute + Coverage controls — top left, side by side */}
+      <div style={{
+        position: "absolute", top: "1rem", left: "1rem",
+        display: "flex", flexDirection: "row", gap: "0.5rem", alignItems: "flex-start",
+        zIndex: 10,
+      }}>
 
-      {/* Coverage controls — below traceroute controls */}
-      {(() => {
-        // Derive the summary labels shown in the always-visible row.
-        const devicePreset = (() => {
-          if (!deviceId || !deviceConfigs) return null;
-          const cfg = deviceConfigs.get(deviceId);
-          return (cfg?.radioConfig as { lora?: { modemPreset?: number } } | undefined)?.lora?.modemPreset ?? null;
-        })();
-        const summaryPreset = presetFilter !== null ? presetFilter : devicePreset;
-        const summaryPresetLabel = summaryPreset != null
-          ? (MODEM_PRESET_LABEL[summaryPreset] ?? `#${summaryPreset}`)
-          : availablePresets.length > 1 ? "All presets" : "—";
-        const summaryRangeLabel = presetFilter !== null
-          ? `${coverageRadiusKm}km`
-          : summaryPreset != null
-            ? `${MODEM_PRESET_RADIUS_KM[summaryPreset] ?? DEFAULT_RADIUS_KM}km`
-            : "auto";
+        {/* ── Traceroute panel ─────────────────────────────────────────── */}
+        <div style={{ ...styles.controlPanel }}>
 
-        // Terrain loading status string (shown in simple row when active)
-        const terrainStatus = (() => {
-          if (!showCoverage || !terrainMode) return null;
-          const total = viewshedStatus.size;
-          if (total === 0) return null;
-          const done   = [...viewshedStatus.values()].filter((s) => s !== "loading").length;
-          const errors = [...viewshedStatus.values()].filter((s) => s === "error").length;
-          if (done < total) return { text: `⛰ ${done}/${total}`, color: "#fbbf24", title: "Computing terrain line-of-sight…" };
-          return { text: errors > 0 ? `⛰ ${errors} failed` : "⛰ ready", color: errors > 0 ? "#fca5a5" : "#86efac", title: undefined };
-        })();
+          {/* Simple row — always visible */}
+          <div style={{ display: "flex", gap: "0.3rem", alignItems: "center" }}>
+            <span style={styles.controlLabel}>Traceroutes:</span>
 
-        const rowStyle: React.CSSProperties = { display: "flex", gap: "0.3rem", alignItems: "center" };
+            <span style={styles.summaryPill}>
+              {AGE_OPTIONS.find((o) => o.hours === ageHours)?.label ?? `${ageHours}h`}
+            </span>
 
-        return (
-          <div style={{ ...styles.controls, top: "3.5rem", flexDirection: "column", alignItems: "flex-start", gap: "0.35rem" }}>
+            <button
+              style={{
+                ...ageFilterBtnStyle(showTraceroutes),
+                ...(!showTraceroutes ? { color: "#64748b" } : {}),
+              }}
+              onClick={() => setShowTraceroutes((v) => !v)}
+              title={showTraceroutes ? "Hide traceroute lines" : "Show traceroute lines"}
+            >
+              {showTraceroutes ? "On" : "Off"}
+            </button>
 
-            {/* ── Simple row — always visible ─────────────────────────────── */}
-            <div style={rowStyle}>
-              <span style={styles.controlLabel}>Coverage:</span>
+            <button
+              style={{ ...ageFilterBtnStyle(tracerouteExpanded), padding: "0.2rem 0.35rem" }}
+              onClick={() => setTracerouteExpanded((v) => !v)}
+              title={tracerouteExpanded ? "Hide age options" : "Show age options"}
+            >
+              {tracerouteExpanded ? "▲" : "▼"}
+            </button>
 
-              {/* Summary pill: preset · range */}
-              <span style={{
-                fontSize: "0.7rem", color: "#cbd5e1",
-                background: "#1e293b", border: "1px solid #334155",
-                borderRadius: "0.3rem", padding: "0.15rem 0.45rem",
-                fontFamily: "monospace",
-              }}>
-                {summaryPresetLabel} · {summaryRangeLabel}
-              </span>
+            <span style={{ color: "#64748b", fontSize: "0.7rem" }}>
+              {showTraceroutes ? `${traceroutes.length} route${traceroutes.length !== 1 ? "s" : ""}` : "hidden"}
+            </span>
+          </div>
 
-              {/* Simple / Terrain toggle */}
-              <button
-                style={{
-                  ...ageFilterBtnStyle(terrainMode),
-                  ...(terrainMode ? { borderColor: "#86efac", color: "#86efac", background: "#14532d" } : {}),
-                }}
-                onClick={() => setTerrainMode((v) => !v)}
-                title={terrainMode ? "Switch to simple circle coverage" : "Switch to terrain-aware coverage (fetches elevation data)"}
-              >
-                {terrainMode ? "Terrain" : "Simple"}
-              </button>
-
-              {/* On / Off toggle */}
-              <button
-                style={{
-                  ...ageFilterBtnStyle(showCoverage),
-                  ...(showCoverage ? {} : { color: "#64748b" }),
-                }}
-                onClick={() => setShowCoverage((v) => !v)}
-                title={showCoverage ? "Hide coverage overlay" : "Show coverage overlay"}
-              >
-                {showCoverage ? "On" : "Off"}
-              </button>
-
-              {/* Expand / collapse arrow */}
-              <button
-                style={{ ...ageFilterBtnStyle(coverageExpanded), padding: "0.2rem 0.35rem" }}
-                onClick={() => setCoverageExpanded((v) => !v)}
-                title={coverageExpanded ? "Hide advanced coverage options" : "Show advanced coverage options"}
-              >
-                {coverageExpanded ? "▲" : "▼"}
-              </button>
-
-              {/* ← All nodes (focused mode) */}
-              {focusedNodeId != null && (
+          {/* Age row — shown when expanded */}
+          {tracerouteExpanded && (
+            <div style={{ display: "flex", gap: "0.3rem", alignItems: "center", paddingTop: "0.15rem", borderTop: "1px solid #1e293b" }}>
+              <span style={{ ...styles.controlLabel, marginRight: 0 }}>Age:</span>
+              {AGE_OPTIONS.map((opt) => (
                 <button
-                  style={{ ...ageFilterBtnStyle(false), borderColor: "#86efac", color: "#86efac" }}
-                  onClick={() => onClearFocusedNode?.()}
-                  title="Return to all-nodes coverage view"
+                  key={opt.label}
+                  style={ageFilterBtnStyle(ageHours === opt.hours)}
+                  onClick={() => {
+                    setAgeHours(opt.hours);
+                    if (!showTraceroutes) setShowTraceroutes(true);
+                  }}
                 >
-                  ← All nodes
+                  {opt.label}
                 </button>
-              )}
-
-              {/* Terrain compute status */}
-              {terrainStatus && (
-                <span style={{ color: terrainStatus.color, fontSize: "0.7rem", fontFamily: "monospace" }} title={terrainStatus.title}>
-                  {terrainStatus.text}
-                </span>
-              )}
+              ))}
             </div>
+          )}
+        </div>
 
-            {/* ── Advanced row — shown when expanded ──────────────────────── */}
-            {coverageExpanded && (
-              <div style={{ ...rowStyle, flexWrap: "wrap", paddingTop: "0.15rem", borderTop: "1px solid #1e293b" }}>
-                <span style={{ ...styles.controlLabel, marginRight: 0 }}>Preset:</span>
+        {/* ── Coverage panel ───────────────────────────────────────────── */}
+        {(() => {
+          const devicePreset = (() => {
+            if (!deviceId || !deviceConfigs) return null;
+            const cfg = deviceConfigs.get(deviceId);
+            return (cfg?.radioConfig as { lora?: { modemPreset?: number } } | undefined)?.lora?.modemPreset ?? null;
+          })();
+          const summaryPreset = presetFilter !== null ? presetFilter : devicePreset;
+          const summaryPresetLabel = summaryPreset != null
+            ? (MODEM_PRESET_LABEL[summaryPreset] ?? `#${summaryPreset}`)
+            : availablePresets.length > 1 ? "All presets" : "—";
+          const summaryRangeLabel = presetFilter !== null
+            ? `${coverageRadiusKm}km`
+            : summaryPreset != null
+              ? `${MODEM_PRESET_RADIUS_KM[summaryPreset] ?? DEFAULT_RADIUS_KM}km`
+              : "auto";
 
-                {/* All-presets option */}
+          const terrainStatus = (() => {
+            if (!showCoverage || !terrainMode) return null;
+            const total = viewshedStatus.size;
+            if (total === 0) return null;
+            const done   = [...viewshedStatus.values()].filter((s) => s !== "loading").length;
+            const errors = [...viewshedStatus.values()].filter((s) => s === "error").length;
+            if (done < total) return { text: `⛰ ${done}/${total}`, color: "#fbbf24", title: "Computing terrain line-of-sight…" };
+            return { text: errors > 0 ? `⛰ ${errors} failed` : "⛰ ready", color: errors > 0 ? "#fca5a5" : "#86efac", title: undefined };
+          })();
+
+          const rowStyle: React.CSSProperties = { display: "flex", gap: "0.3rem", alignItems: "center" };
+
+          return (
+            <div style={{ ...styles.controlPanel }}>
+
+              {/* Simple row — always visible */}
+              <div style={rowStyle}>
+                <span style={styles.controlLabel}>Coverage:</span>
+
+                <span style={styles.summaryPill}>
+                  {summaryPresetLabel} · {summaryRangeLabel}
+                </span>
+
                 <button
-                  style={ageFilterBtnStyle(presetFilter === null)}
-                  onClick={() => setPresetFilter?.(null)}
-                  title="Show all presets at their own default range"
-                >All</button>
+                  style={{
+                    ...ageFilterBtnStyle(terrainMode),
+                    ...(terrainMode ? { borderColor: "#86efac", color: "#86efac", background: "#14532d" } : {}),
+                  }}
+                  onClick={() => setTerrainMode((v) => !v)}
+                  title={terrainMode ? "Switch to simple circle coverage" : "Switch to terrain-aware coverage (fetches elevation data)"}
+                >
+                  {terrainMode ? "Terrain" : "Simple"}
+                </button>
 
-                {availablePresets.map((p) => (
+                <button
+                  style={{
+                    ...ageFilterBtnStyle(showCoverage),
+                    ...(showCoverage ? {} : { color: "#64748b" }),
+                  }}
+                  onClick={() => setShowCoverage((v) => !v)}
+                  title={showCoverage ? "Hide coverage overlay" : "Show coverage overlay"}
+                >
+                  {showCoverage ? "On" : "Off"}
+                </button>
+
+                <button
+                  style={{ ...ageFilterBtnStyle(coverageExpanded), padding: "0.2rem 0.35rem" }}
+                  onClick={() => setCoverageExpanded((v) => !v)}
+                  title={coverageExpanded ? "Hide advanced coverage options" : "Show advanced coverage options"}
+                >
+                  {coverageExpanded ? "▲" : "▼"}
+                </button>
+
+                {focusedNodeId != null && (
                   <button
-                    key={p}
-                    style={ageFilterBtnStyle(presetFilter === p)}
-                    onClick={() => {
-                      const next = presetFilter === p ? null : p;
-                      setPresetFilter?.(next);
-                      if (next !== null) {
-                        setCoverageRadiusKm(MODEM_PRESET_RADIUS_KM[next] ?? DEFAULT_RADIUS_KM);
-                        setUserPickedRadius(false);
-                      }
-                    }}
-                    title={`${MODEM_PRESET_LABEL[p] ?? `#${p}`} — default range ${MODEM_PRESET_RADIUS_KM[p] ?? DEFAULT_RADIUS_KM}km`}
+                    style={{ ...ageFilterBtnStyle(false), borderColor: "#86efac", color: "#86efac" }}
+                    onClick={() => onClearFocusedNode?.()}
+                    title="Return to all-nodes coverage view"
                   >
-                    {MODEM_PRESET_LABEL[p] ?? `#${p}`}
+                    ← All nodes
                   </button>
-                ))}
-
-                {/* Range override — only meaningful when filtered to one preset */}
-                {presetFilter !== null && (
-                  <>
-                    <span style={{ color: "#475569", margin: "0 0.1rem", fontSize: "0.8rem" }}>|</span>
-                    <span style={{ ...styles.controlLabel, marginRight: 0 }}>Range:</span>
-                    {COVERAGE_RADII_KM.map((km) => (
-                      <button
-                        key={km}
-                        style={ageFilterBtnStyle(coverageRadiusKm === km)}
-                        onClick={() => { setCoverageRadiusKm(km); setUserPickedRadius(true); }}
-                        title={`Set coverage radius to ${km} km`}
-                      >
-                        {km}km
-                      </button>
-                    ))}
-                  </>
                 )}
 
-                {/* MQTT coverage toggle */}
-                {showMqtt && (
-                  <>
-                    <span style={{ color: "#475569", margin: "0 0.1rem", fontSize: "0.8rem" }}>|</span>
-                    <button
-                      style={{
-                        ...ageFilterBtnStyle(coverageMqtt),
-                        ...(coverageMqtt ? { borderColor: "#34d399", color: "#34d399", background: "#052e16" } : {}),
-                      }}
-                      onClick={() => setCoverageMqtt((v) => !v)}
-                      title={coverageMqtt ? "Hide MQTT node coverage" : "Include MQTT nodes in coverage overlay"}
-                    >
-                      {coverageMqtt ? "−MQTT" : "+MQTT"}
-                    </button>
-                  </>
+                {terrainStatus && (
+                  <span style={{ color: terrainStatus.color, fontSize: "0.7rem", fontFamily: "monospace" }} title={terrainStatus.title}>
+                    {terrainStatus.text}
+                  </span>
                 )}
               </div>
-            )}
-          </div>
-        );
-      })()}
+
+              {/* Advanced row — shown when expanded */}
+              {coverageExpanded && (
+                <div style={{ ...rowStyle, flexWrap: "wrap", paddingTop: "0.15rem", borderTop: "1px solid #1e293b" }}>
+                  <span style={{ ...styles.controlLabel, marginRight: 0 }}>Preset:</span>
+
+                  <button
+                    style={ageFilterBtnStyle(presetFilter === null)}
+                    onClick={() => setPresetFilter?.(null)}
+                    title="Show all presets at their own default range"
+                  >All</button>
+
+                  {availablePresets.map((p) => (
+                    <button
+                      key={p}
+                      style={ageFilterBtnStyle(presetFilter === p)}
+                      onClick={() => {
+                        const next = presetFilter === p ? null : p;
+                        setPresetFilter?.(next);
+                        if (next !== null) {
+                          setCoverageRadiusKm(MODEM_PRESET_RADIUS_KM[next] ?? DEFAULT_RADIUS_KM);
+                          setUserPickedRadius(false);
+                        }
+                      }}
+                      title={`${MODEM_PRESET_LABEL[p] ?? `#${p}`} — default range ${MODEM_PRESET_RADIUS_KM[p] ?? DEFAULT_RADIUS_KM}km`}
+                    >
+                      {MODEM_PRESET_LABEL[p] ?? `#${p}`}
+                    </button>
+                  ))}
+
+                  {presetFilter !== null && (
+                    <>
+                      <span style={{ color: "#475569", margin: "0 0.1rem", fontSize: "0.8rem" }}>|</span>
+                      <span style={{ ...styles.controlLabel, marginRight: 0 }}>Range:</span>
+                      {COVERAGE_RADII_KM.map((km) => (
+                        <button
+                          key={km}
+                          style={ageFilterBtnStyle(coverageRadiusKm === km)}
+                          onClick={() => { setCoverageRadiusKm(km); setUserPickedRadius(true); }}
+                          title={`Set coverage radius to ${km} km`}
+                        >
+                          {km}km
+                        </button>
+                      ))}
+                    </>
+                  )}
+
+                  {showMqtt && (
+                    <>
+                      <span style={{ color: "#475569", margin: "0 0.1rem", fontSize: "0.8rem" }}>|</span>
+                      <button
+                        style={{
+                          ...ageFilterBtnStyle(coverageMqtt),
+                          ...(coverageMqtt ? { borderColor: "#34d399", color: "#34d399", background: "#052e16" } : {}),
+                        }}
+                        onClick={() => setCoverageMqtt((v) => !v)}
+                        title={coverageMqtt ? "Hide MQTT node coverage" : "Include MQTT nodes in coverage overlay"}
+                      >
+                        {coverageMqtt ? "−MQTT" : "+MQTT"}
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })()}
+      </div>
 
       {/* Legend — bottom left */}
       <div style={styles.legend}>
         <span style={styles.legendItem}>
-          <span style={{ ...styles.legendDot, background: "#3b82f6", border: "2px solid #3b82f6" }} />
-          Local / direct
+          <span style={{ position: "relative", display: "inline-flex", alignItems: "center", justifyContent: "center" }}>
+            <span style={{ ...styles.legendDot, background: "#3b82f6", border: "2px solid #3b82f6" }} />
+            <span style={{ position: "absolute", inset: "-3px", borderRadius: "50%", border: "2px dashed #22c55e" }} />
+          </span>
+          Direct (0 hops)
         </span>
         <span style={styles.legendItem}>
           <span style={{ ...styles.legendDot, background: "#0f172a", border: "2px solid #94a3b8" }} />
@@ -1016,11 +1040,11 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
         </span>
         <span style={styles.legendItem}>
           <span style={styles.legendLine} />
-          Route
+          Traceroute
         </span>
         <span style={styles.legendItem}>
           <span style={{ ...styles.legendLine, borderStyle: "dashed", opacity: 0.6 }} />
-          Route (gap)
+          Traceroute (gap)
         </span>
         {showCoverage && (
           <span style={styles.legendItem}>
@@ -1256,6 +1280,27 @@ const styles: Record<string, React.CSSProperties> = {
     gap: "0.3rem",
     alignItems: "center",
     zIndex: 10,
+  },
+  controlPanel: {
+    background: "#0f172acc",
+    backdropFilter: "blur(4px)",
+    color: "#e2e8f0",
+    padding: "0.4rem 0.6rem",
+    borderRadius: "0.5rem",
+    fontSize: "0.75rem",
+    display: "flex",
+    flexDirection: "column" as const,
+    gap: "0.35rem",
+    alignItems: "flex-start",
+  },
+  summaryPill: {
+    fontSize: "0.7rem",
+    color: "#cbd5e1",
+    background: "#1e293b",
+    border: "1px solid #334155",
+    borderRadius: "0.3rem",
+    padding: "0.15rem 0.45rem",
+    fontFamily: "monospace",
   },
   controlLabel: {
     color: "#94a3b8",
