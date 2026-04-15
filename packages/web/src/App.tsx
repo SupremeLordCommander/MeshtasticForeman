@@ -1,4 +1,6 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo } from "react";
+
+type MqttScope = "city" | "county" | "state" | "country" | "all";
 import { foremanClient } from "./ws/client.js";
 import type { DeviceInfo, NodeInfo, MqttNode, NodeOverride, ActivityEntry, LogEntry, DeviceConfig } from "@foreman/shared";
 import { NodesPage } from "./pages/NodesPage.js";
@@ -122,6 +124,9 @@ export function App() {
   const menuRef = useRef<HTMLDivElement>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsRef = useRef<HTMLDivElement>(null);
+  const [mqttOpen, setMqttOpen] = useState(false);
+  const mqttRef = useRef<HTMLDivElement>(null);
+  const [mqttScope, setMqttScope] = useState<MqttScope>("county");
   const [apiDocsOpen, setApiDocsOpen] = useState(false);
   const [gpsOpen, setGpsOpen] = useState(false);
   const gpsRef = useRef<HTMLDivElement>(null);
@@ -156,6 +161,18 @@ export function App() {
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [menuOpen]);
+
+  // Close MQTT panel on outside click
+  useEffect(() => {
+    if (!mqttOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (mqttRef.current && !mqttRef.current.contains(e.target as Node)) {
+        setMqttOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [mqttOpen]);
 
   // Close settings panel on outside click
   useEffect(() => {
@@ -300,9 +317,32 @@ export function App() {
   const effectiveNodes     = applyNodeOverrides(nodes,     overrides);
   const effectiveMqttNodes = applyNodeOverrides(mqttNodes, overrides);
 
+  // Derive gateway region from the connected device's own node in MQTT
+  const gatewayRegion = useMemo(() => {
+    const ownNodeId = devices.find((d) => d.status === "connected")?.ownNodeId;
+    if (ownNodeId == null) return null;
+    return mqttNodes.find((n) => n.nodeId === ownNodeId)?.regionPath ?? null;
+  }, [devices, mqttNodes]);
+
+  // Region prefix to match against, based on selected scope
+  const mqttRegionPrefix = useMemo(() => {
+    if (mqttScope === "all" || gatewayRegion == null) return null;
+    const parts = gatewayRegion.split("/");
+    const depth: Record<MqttScope, number> = { city: 4, county: 3, state: 2, country: 1, all: 0 };
+    return parts.slice(0, depth[mqttScope]).join("/");
+  }, [mqttScope, gatewayRegion]);
+
+  // Apply scope filter on top of overrides
+  const scopedMqttNodes = useMemo(() => {
+    if (mqttRegionPrefix === null) return effectiveMqttNodes;
+    return effectiveMqttNodes.filter((n) =>
+      n.regionPath != null && n.regionPath.startsWith(mqttRegionPrefix)
+    );
+  }, [effectiveMqttNodes, mqttRegionPrefix]);
+
   // Counts for map filter buttons
   const mappableMeshCount = effectiveNodes.filter((n) => n.latitude != null && n.longitude != null).length;
-  const mappableMqttCount = effectiveMqttNodes.filter((n) => n.latitude != null && n.longitude != null).length;
+  const mappableMqttCount = scopedMqttNodes.filter((n) => n.latitude != null && n.longitude != null).length;
 
   // Tag counts for log filter buttons
   const logTagCounts: Record<string, number> = {};
@@ -439,23 +479,69 @@ export function App() {
           );
         })()}
 
-        {/* ── MQTT toggle ───────────────────────────────────────────────────── */}
-        <button
-          onClick={toggleMqtt}
-          style={{
-            flexShrink: 0,
-            background: mqttEnabled ? "#166534" : "#1e293b",
-            border: `1px solid ${mqttEnabled ? "#16a34a" : "#ef4444"}`,
-            color: mqttEnabled ? "#4ade80" : "#f87171",
-            padding: "0.2rem 0.7rem",
-            borderRadius: "0.25rem",
-            cursor: "pointer",
-            fontSize: "0.75rem",
-            fontFamily: "monospace",
-          }}
-        >
-          MQTT {mqttEnabled ? "ON" : "OFF"}
-        </button>
+        {/* ── MQTT dropdown ─────────────────────────────────────────────────── */}
+        <div ref={mqttRef} style={styles.menuContainer}>
+          <button onClick={() => setMqttOpen((v) => !v)} style={menuBtnStyle(mqttOpen, mqttEnabled)}>
+            <span style={{ color: mqttEnabled ? "#4ade80" : "#ef4444", fontSize: "0.65rem" }}>●</span>
+            MQTT
+            <span style={{ color: "#94a3b8", fontSize: "0.7rem" }}>
+              {mqttScope !== "all" ? mqttScope : "all"}
+            </span>
+            <span style={{ color: "#475569", marginLeft: "0.1rem", fontSize: "0.65rem" }}>▾</span>
+          </button>
+
+          {mqttOpen && (
+            <div style={styles.menuPanel}>
+              <div style={styles.menuSection}>
+                <span style={styles.menuSectionLabel}>MQTT broker</span>
+                <button
+                  onClick={toggleMqtt}
+                  style={{
+                    ...menuNavBtn(mqttEnabled),
+                    color: mqttEnabled ? "#4ade80" : "#f87171",
+                    borderColor: mqttEnabled ? "#16a34a" : "#ef4444",
+                    background: mqttEnabled ? "#166534" : "#1e293b",
+                  }}
+                >
+                  {mqttEnabled ? "On" : "Off"}
+                </button>
+              </div>
+
+              <div style={styles.menuDivider} />
+
+              <div style={styles.menuSection}>
+                <span style={styles.menuSectionLabel}>
+                  Region scope
+                  {gatewayRegion == null && (
+                    <span style={{ color: "#f59e0b", marginLeft: "0.4rem", fontSize: "0.65rem" }}>
+                      (no gateway region)
+                    </span>
+                  )}
+                </span>
+                {gatewayRegion != null && (
+                  <span style={{ color: "#475569", fontSize: "0.65rem", fontFamily: "monospace", marginBottom: "0.25rem" }}>
+                    {gatewayRegion}
+                  </span>
+                )}
+                {(["city", "county", "state", "country", "all"] as MqttScope[]).map((s) => (
+                  <button
+                    key={s}
+                    style={menuNavBtn(mqttScope === s)}
+                    onClick={() => setMqttScope(s)}
+                    title={gatewayRegion == null && s !== "all" ? "Gateway region not yet known" : undefined}
+                  >
+                    {s.charAt(0).toUpperCase() + s.slice(1)}
+                  </button>
+                ))}
+                <span style={{ color: "#475569", fontSize: "0.65rem", marginTop: "0.2rem" }}>
+                  {mqttScope !== "all" && gatewayRegion != null
+                    ? `${scopedMqttNodes.length} / ${effectiveMqttNodes.length} nodes`
+                    : `${effectiveMqttNodes.length} nodes`}
+                </span>
+              </div>
+            </div>
+          )}
+        </div>
 
         {/* ── Settings menu ─────────────────────────────────────────────────── */}
         <div ref={settingsRef} style={styles.menuContainer}>
@@ -655,7 +741,7 @@ export function App() {
           <NodesPage
             devices={devices}
             nodes={effectiveNodes}
-            mqttNodes={effectiveMqttNodes}
+            mqttNodes={scopedMqttNodes}
             onMessage={(nodeId) => { setMessageTarget(nodeId); setTab("messages"); }}
             onCoverageMap={(nodeId) => { setFocusedCoverageNodeId(nodeId); setTab("map"); }}
           />
@@ -664,7 +750,7 @@ export function App() {
       {tab === "map" && (
         <MapPage
           nodes={effectiveNodes}
-          mqttNodes={effectiveMqttNodes}
+          mqttNodes={scopedMqttNodes}
           showMesh={showMesh}
           setShowMesh={setShowMesh}
           showMqtt={showMqtt}
@@ -683,7 +769,7 @@ export function App() {
           <MessagesPage
             devices={devices}
             nodes={effectiveNodes}
-            mqttNodes={effectiveMqttNodes}
+            mqttNodes={scopedMqttNodes}
             initialNodeId={messageTarget}
             onInitialNodeConsumed={() => setMessageTarget(null)}
           />
