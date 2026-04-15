@@ -64,7 +64,7 @@ const AGE_OPTIONS: { label: string; hours: number }[] = [
 // Coverage circle helpers
 // ---------------------------------------------------------------------------
 
-const COVERAGE_RADII_KM = [1, 3, 5, 10, 20];
+const COVERAGE_RADII_KM = [1, 2, 3, 5, 7, 10, 12, 15, 20];
 
 /**
  * Expected typical LoRa range per modem preset (km).
@@ -265,9 +265,10 @@ interface Props {
   onClearFocusedNode?: () => void;
   /** Only show coverage for nodes on this modem preset (null = show all). */
   presetFilter?: number | null;
+  setPresetFilter?: (v: number | null) => void;
 }
 
-export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, setShowMqtt, deviceId, deviceConfigs, onMessage, focusedNodeId, onClearFocusedNode, presetFilter = null }: Props) {
+export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, setShowMqtt, deviceId, deviceConfigs, onMessage, focusedNodeId, onClearFocusedNode, presetFilter = null, setPresetFilter }: Props) {
   const [selected, setSelected] = useState<SelectedNode | null>(null);
   const [traceroutes, setTraceroutes] = useState<StoredTraceroute[]>([]);
   const [showTraceroutes, setShowTraceroutes] = useState(false);
@@ -275,6 +276,8 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
   const [pendingAction, setPendingAction] = useState<PendingMapAction | null>(null);
   const [showCoverage, setShowCoverage] = useState(false);
   const [terrainMode, setTerrainMode] = useState(false);
+  const [coverageExpanded, setCoverageExpanded] = useState(false);
+  const [coverageMqtt, setCoverageMqtt] = useState(false);
   const [coverageRadiusKm, setCoverageRadiusKm] = useState(() =>
     presetRadiusKm(deviceConfigs ?? new Map(), deviceId)
   );
@@ -285,6 +288,19 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
     if (userPickedRadius) return;
     setCoverageRadiusKm(presetRadiusKm(deviceConfigs ?? new Map(), deviceId));
   }, [deviceId, deviceConfigs]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // All unique modem presets present in current nodes — used to render preset filter buttons.
+  const availablePresets = useMemo(() => {
+    const seen = new Set<number>();
+    const cfg = deviceConfigs?.get(deviceId ?? "");
+    const meshPreset = (cfg?.radioConfig as { lora?: { modemPreset?: number } } | undefined)?.lora?.modemPreset;
+    if (meshPreset != null) seen.add(meshPreset);
+    for (const n of mqttNodes) {
+      const p = channelNameToPreset(n.channelName);
+      if (p != null) seen.add(p);
+    }
+    return [...seen].sort((a, b) => a - b);
+  }, [nodes, mqttNodes, deviceId, deviceConfigs]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Tracks nodes whose terrain is currently being force-refreshed via the popup button.
   const [refreshingTerrainNodes, setRefreshingTerrainNodes] = useState<Set<number>>(new Set());
@@ -505,9 +521,13 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
 
     const features: GeoJSON.Feature[] = [];
 
-    // Helper to get the radius for a given preset number (or fall back to default)
+    // When a specific preset is selected the user can override the radius via the range
+    // buttons (coverageRadiusKm).  When showing all presets each node uses its own
+    // preset's default range so the circles are proportionally accurate.
     const radiusFor = (preset: number | null) =>
-      preset != null ? (MODEM_PRESET_RADIUS_KM[preset] ?? DEFAULT_RADIUS_KM) : DEFAULT_RADIUS_KM;
+      presetFilter !== null
+        ? coverageRadiusKm
+        : (preset != null ? (MODEM_PRESET_RADIUS_KM[preset] ?? DEFAULT_RADIUS_KM) : DEFAULT_RADIUS_KM);
 
     // ── Mesh nodes ────────────────────────────────────────────────────────────
     const meshToShow = focusedNodeId != null
@@ -530,8 +550,8 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
       }
     }
 
-    // ── MQTT nodes ────────────────────────────────────────────────────────────
-    if (showMqtt) {
+    // ── MQTT nodes — only included when explicitly enabled in coverage settings ──
+    if (showMqtt && coverageMqtt) {
       const mqttToShow = focusedNodeId != null
         ? mappableMqtt.filter((n) => n.nodeId === focusedNodeId)
         : mappableMqtt;
@@ -555,7 +575,7 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
     }
 
     return mkFeatureCollection(features);
-  }, [showCoverage, terrainMode, coverageRadiusKm, focusedNodeId, mappableMesh, mappableMqtt, showMqtt, presetFilter, deviceId, deviceConfigs, viewshedStatus]);
+  }, [showCoverage, terrainMode, coverageRadiusKm, coverageMqtt, focusedNodeId, mappableMesh, mappableMqtt, showMqtt, presetFilter, deviceId, deviceConfigs, viewshedStatus]);
 
   const firstNode = allMappable[0];
   const initialView = {
@@ -810,84 +830,175 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
         </span>
       </div>
 
-      {/* Coverage radius controls — below traceroute controls */}
-      <div style={{ ...styles.controls, top: "3.5rem" }}>
-        <span style={styles.controlLabel}>
-          Coverage
-          {(() => {
-            if (!deviceId || !deviceConfigs) return ":";
-            const cfg = deviceConfigs.get(deviceId);
-            const preset = (cfg?.radioConfig as { lora?: { modemPreset?: number } } | undefined)?.lora?.modemPreset;
-            if (preset == null) return ":";
-            return ` (${MODEM_PRESET_LABEL[preset] ?? preset}):`;
-          })()}
-        </span>
-        {COVERAGE_RADII_KM.map((km) => (
-          <button
-            key={km}
-            style={ageFilterBtnStyle(showCoverage && coverageRadiusKm === km)}
-            onClick={() => {
-              setShowCoverage(true);
-              setCoverageRadiusKm(km);
-              setUserPickedRadius(true);
-            }}
-          >
-            {km}km
-          </button>
-        ))}
-        <button
-          style={{
-            ...ageFilterBtnStyle(showCoverage && terrainMode),
-            borderColor: showCoverage && terrainMode ? "#86efac" : undefined,
-            color: showCoverage && terrainMode ? "#86efac" : undefined,
-            background: showCoverage && terrainMode ? "#14532d" : undefined,
-          }}
-          onClick={() => {
-            setShowCoverage(true);
-            setTerrainMode((v) => !v);
-          }}
-          title="Terrain-aware coverage (fetches elevation data)"
-        >
-          Terrain
-        </button>
-        <button
-          style={ageFilterBtnStyle(!showCoverage)}
-          onClick={() => { setShowCoverage((v) => !v); if (showCoverage) setTerrainMode(false); }}
-          title="Hide coverage"
-        >
-          Off
-        </button>
-        {focusedNodeId != null && (
-          <button
-            style={{
-              ...ageFilterBtnStyle(false),
-              borderColor: "#86efac",
-              color: "#86efac",
-              marginLeft: "0.25rem",
-            }}
-            onClick={() => onClearFocusedNode?.()}
-            title="Return to all-nodes coverage view"
-          >
-            ← All nodes
-          </button>
-        )}
-        {showCoverage && terrainMode && (() => {
+      {/* Coverage controls — below traceroute controls */}
+      {(() => {
+        // Derive the summary labels shown in the always-visible row.
+        const devicePreset = (() => {
+          if (!deviceId || !deviceConfigs) return null;
+          const cfg = deviceConfigs.get(deviceId);
+          return (cfg?.radioConfig as { lora?: { modemPreset?: number } } | undefined)?.lora?.modemPreset ?? null;
+        })();
+        const summaryPreset = presetFilter !== null ? presetFilter : devicePreset;
+        const summaryPresetLabel = summaryPreset != null
+          ? (MODEM_PRESET_LABEL[summaryPreset] ?? `#${summaryPreset}`)
+          : availablePresets.length > 1 ? "All presets" : "—";
+        const summaryRangeLabel = presetFilter !== null
+          ? `${coverageRadiusKm}km`
+          : summaryPreset != null
+            ? `${MODEM_PRESET_RADIUS_KM[summaryPreset] ?? DEFAULT_RADIUS_KM}km`
+            : "auto";
+
+        // Terrain loading status string (shown in simple row when active)
+        const terrainStatus = (() => {
+          if (!showCoverage || !terrainMode) return null;
           const total = viewshedStatus.size;
-          const done  = [...viewshedStatus.values()].filter((s) => s !== "loading").length;
-          const errors = [...viewshedStatus.values()].filter((s) => s === "error").length;
           if (total === 0) return null;
-          if (done < total) return (
-            <span style={{ color: "#fbbf24", fontSize: "0.7rem", fontFamily: "monospace" }} title="Computing terrain line-of-sight for each node. First run fetches elevation data from the internet; subsequent runs use the local cache and are instant.">
-              ⛰ Computing terrain… {done}/{total}
-            </span>
-          );
-          return (
-            <span style={{ color: errors > 0 ? "#fca5a5" : "#86efac", fontSize: "0.7rem", fontFamily: "monospace" }}>
-              {errors > 0 ? `⛰ ${errors} failed` : "⛰ ready"}
-            </span>
-          );
-        })()}
-      </div>
+          const done   = [...viewshedStatus.values()].filter((s) => s !== "loading").length;
+          const errors = [...viewshedStatus.values()].filter((s) => s === "error").length;
+          if (done < total) return { text: `⛰ ${done}/${total}`, color: "#fbbf24", title: "Computing terrain line-of-sight…" };
+          return { text: errors > 0 ? `⛰ ${errors} failed` : "⛰ ready", color: errors > 0 ? "#fca5a5" : "#86efac", title: undefined };
+        })();
+
+        const rowStyle: React.CSSProperties = { display: "flex", gap: "0.3rem", alignItems: "center" };
+
+        return (
+          <div style={{ ...styles.controls, top: "3.5rem", flexDirection: "column", alignItems: "flex-start", gap: "0.35rem" }}>
+
+            {/* ── Simple row — always visible ─────────────────────────────── */}
+            <div style={rowStyle}>
+              <span style={styles.controlLabel}>Coverage:</span>
+
+              {/* Summary pill: preset · range */}
+              <span style={{
+                fontSize: "0.7rem", color: "#cbd5e1",
+                background: "#1e293b", border: "1px solid #334155",
+                borderRadius: "0.3rem", padding: "0.15rem 0.45rem",
+                fontFamily: "monospace",
+              }}>
+                {summaryPresetLabel} · {summaryRangeLabel}
+              </span>
+
+              {/* Simple / Terrain toggle */}
+              <button
+                style={{
+                  ...ageFilterBtnStyle(terrainMode),
+                  ...(terrainMode ? { borderColor: "#86efac", color: "#86efac", background: "#14532d" } : {}),
+                }}
+                onClick={() => setTerrainMode((v) => !v)}
+                title={terrainMode ? "Switch to simple circle coverage" : "Switch to terrain-aware coverage (fetches elevation data)"}
+              >
+                {terrainMode ? "Terrain" : "Simple"}
+              </button>
+
+              {/* On / Off toggle */}
+              <button
+                style={{
+                  ...ageFilterBtnStyle(showCoverage),
+                  ...(showCoverage ? {} : { color: "#64748b" }),
+                }}
+                onClick={() => setShowCoverage((v) => !v)}
+                title={showCoverage ? "Hide coverage overlay" : "Show coverage overlay"}
+              >
+                {showCoverage ? "On" : "Off"}
+              </button>
+
+              {/* Expand / collapse arrow */}
+              <button
+                style={{ ...ageFilterBtnStyle(coverageExpanded), padding: "0.2rem 0.35rem" }}
+                onClick={() => setCoverageExpanded((v) => !v)}
+                title={coverageExpanded ? "Hide advanced coverage options" : "Show advanced coverage options"}
+              >
+                {coverageExpanded ? "▲" : "▼"}
+              </button>
+
+              {/* ← All nodes (focused mode) */}
+              {focusedNodeId != null && (
+                <button
+                  style={{ ...ageFilterBtnStyle(false), borderColor: "#86efac", color: "#86efac" }}
+                  onClick={() => onClearFocusedNode?.()}
+                  title="Return to all-nodes coverage view"
+                >
+                  ← All nodes
+                </button>
+              )}
+
+              {/* Terrain compute status */}
+              {terrainStatus && (
+                <span style={{ color: terrainStatus.color, fontSize: "0.7rem", fontFamily: "monospace" }} title={terrainStatus.title}>
+                  {terrainStatus.text}
+                </span>
+              )}
+            </div>
+
+            {/* ── Advanced row — shown when expanded ──────────────────────── */}
+            {coverageExpanded && (
+              <div style={{ ...rowStyle, flexWrap: "wrap", paddingTop: "0.15rem", borderTop: "1px solid #1e293b" }}>
+                <span style={{ ...styles.controlLabel, marginRight: 0 }}>Preset:</span>
+
+                {/* All-presets option */}
+                <button
+                  style={ageFilterBtnStyle(presetFilter === null)}
+                  onClick={() => setPresetFilter?.(null)}
+                  title="Show all presets at their own default range"
+                >All</button>
+
+                {availablePresets.map((p) => (
+                  <button
+                    key={p}
+                    style={ageFilterBtnStyle(presetFilter === p)}
+                    onClick={() => {
+                      const next = presetFilter === p ? null : p;
+                      setPresetFilter?.(next);
+                      if (next !== null) {
+                        setCoverageRadiusKm(MODEM_PRESET_RADIUS_KM[next] ?? DEFAULT_RADIUS_KM);
+                        setUserPickedRadius(false);
+                      }
+                    }}
+                    title={`${MODEM_PRESET_LABEL[p] ?? `#${p}`} — default range ${MODEM_PRESET_RADIUS_KM[p] ?? DEFAULT_RADIUS_KM}km`}
+                  >
+                    {MODEM_PRESET_LABEL[p] ?? `#${p}`}
+                  </button>
+                ))}
+
+                {/* Range override — only meaningful when filtered to one preset */}
+                {presetFilter !== null && (
+                  <>
+                    <span style={{ color: "#475569", margin: "0 0.1rem", fontSize: "0.8rem" }}>|</span>
+                    <span style={{ ...styles.controlLabel, marginRight: 0 }}>Range:</span>
+                    {COVERAGE_RADII_KM.map((km) => (
+                      <button
+                        key={km}
+                        style={ageFilterBtnStyle(coverageRadiusKm === km)}
+                        onClick={() => { setCoverageRadiusKm(km); setUserPickedRadius(true); }}
+                        title={`Set coverage radius to ${km} km`}
+                      >
+                        {km}km
+                      </button>
+                    ))}
+                  </>
+                )}
+
+                {/* MQTT coverage toggle */}
+                {showMqtt && (
+                  <>
+                    <span style={{ color: "#475569", margin: "0 0.1rem", fontSize: "0.8rem" }}>|</span>
+                    <button
+                      style={{
+                        ...ageFilterBtnStyle(coverageMqtt),
+                        ...(coverageMqtt ? { borderColor: "#34d399", color: "#34d399", background: "#052e16" } : {}),
+                      }}
+                      onClick={() => setCoverageMqtt((v) => !v)}
+                      title={coverageMqtt ? "Hide MQTT node coverage" : "Include MQTT nodes in coverage overlay"}
+                    >
+                      {coverageMqtt ? "−MQTT" : "+MQTT"}
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Legend — bottom left */}
       <div style={styles.legend}>
