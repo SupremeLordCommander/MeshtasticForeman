@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { foremanClient } from "./ws/client.js";
 import type { DeviceInfo, NodeInfo, MqttNode, NodeOverride, ActivityEntry, LogEntry, DeviceConfig } from "@foreman/shared";
 import { NodesPage } from "./pages/NodesPage.js";
-import { MapPage, MODEM_PRESET_LABEL, channelNameToPreset } from "./pages/MapPage.js";
+import { MapPage } from "./pages/MapPage.js";
 import { NodeOverridesPage } from "./pages/NodeOverridesPage.js";
 import { ActivityPage } from "./pages/ActivityPage.js";
 import { LogsPage } from "./pages/LogsPage.js";
@@ -501,53 +501,21 @@ export function App() {
               {/* Tab-specific filters */}
               {hasTabFilters && <div style={styles.menuDivider} />}
 
-              {tab === "map" && (() => {
-                // Collect all unique modem presets seen across live nodes
-                const seenPresets = new Set<number>();
-                for (const n of effectiveMqttNodes) {
-                  const p = channelNameToPreset(n.channelName);
-                  if (p != null) seenPresets.add(p);
-                }
-                // Also include the connected device's preset if known
-                const connectedId = devices.find((d) => d.status === "connected")?.id;
-                const connectedCfg = connectedId ? deviceConfigs.get(connectedId) : undefined;
-                const meshPreset = (connectedCfg?.radioConfig as { lora?: { modemPreset?: number } } | undefined)?.lora?.modemPreset;
-                if (meshPreset != null) seenPresets.add(meshPreset);
-                const sortedPresets = [...seenPresets].sort((a, b) => a - b);
-
-                return (
-                  <div style={styles.menuSection}>
-                    <span style={styles.menuSectionLabel}>Map filters</span>
-                    <button style={hdrFilterBtn(showMesh)} onClick={() => setShowMesh((v) => !v)}>
-                      <span style={{ ...styles.dotBase, border: "2px solid #94a3b8", background: "#0f172a" }} />
-                      Mesh
-                      {mappableMeshCount > 0 && <span style={styles.hdrCount}>{mappableMeshCount}</span>}
-                    </button>
-                    <button style={hdrFilterBtn(showMqtt)} onClick={() => setShowMqtt((v) => !v)}>
-                      <span style={{ ...styles.dotBase, border: "2px dashed #94a3b8", background: "#0f172a" }} />
-                      MQTT
-                      {mappableMqttCount > 0 && <span style={styles.hdrCount}>{mappableMqttCount}</span>}
-                    </button>
-                    {sortedPresets.length > 1 && (
-                      <>
-                        <span style={{ ...styles.filterLabel, marginLeft: "0.4rem" }}>Preset:</span>
-                        <button style={hdrFilterBtn(presetFilter === null)} onClick={() => setPresetFilter(null)}>
-                          All
-                        </button>
-                        {sortedPresets.map((p) => (
-                          <button
-                            key={p}
-                            style={hdrFilterBtn(presetFilter === p)}
-                            onClick={() => setPresetFilter((v) => v === p ? null : p)}
-                          >
-                            {MODEM_PRESET_LABEL[p]?.replace("_", " ").toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase()) ?? `#${p}`}
-                          </button>
-                        ))}
-                      </>
-                    )}
-                  </div>
-                );
-              })()}
+              {tab === "map" && (
+                <div style={styles.menuSection}>
+                  <span style={styles.menuSectionLabel}>Map filters</span>
+                  <button style={hdrFilterBtn(showMesh)} onClick={() => setShowMesh((v) => !v)}>
+                    <span style={{ ...styles.dotBase, border: "2px solid #94a3b8", background: "#0f172a" }} />
+                    Mesh
+                    {mappableMeshCount > 0 && <span style={styles.hdrCount}>{mappableMeshCount}</span>}
+                  </button>
+                  <button style={hdrFilterBtn(showMqtt)} onClick={() => setShowMqtt((v) => !v)}>
+                    <span style={{ ...styles.dotBase, border: "2px dashed #94a3b8", background: "#0f172a" }} />
+                    MQTT
+                    {mappableMqttCount > 0 && <span style={styles.hdrCount}>{mappableMqttCount}</span>}
+                  </button>
+                </div>
+              )}
 
               {tab === "activity" && (
                 <div style={styles.menuSection}>
@@ -673,6 +641,7 @@ export function App() {
           onClearFocusedNode={() => setFocusedCoverageNodeId(null)}
           onMessage={(nodeId) => { setMessageTarget(nodeId); setTab("messages"); }}
           presetFilter={presetFilter}
+          setPresetFilter={setPresetFilter}
         />
       )}
       {tab === "messages" && (
