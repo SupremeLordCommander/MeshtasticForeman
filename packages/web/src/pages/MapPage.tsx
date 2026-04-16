@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import MapGL, { type MapRef, Marker, Popup, NavigationControl, Source, Layer } from "react-map-gl/maplibre";
 import "maplibre-gl/dist/maplibre-gl.css";
-import type { NodeInfo, MqttNode, DeviceConfig } from "@foreman/shared";
+import type { NodeInfo, MqttNode, DeviceConfig, CoverageProposal } from "@foreman/shared";
 import { foremanClient } from "../ws/client.js";
 import { union } from "@turf/union";
 import { featureCollection } from "@turf/helpers";
@@ -10,6 +10,8 @@ type PendingMapAction = { nodeId: number; action: "ping" | "traceroute" };
 
 const MAP_STYLE =
   import.meta.env.VITE_MAP_STYLE ?? "https://tiles.openfreemap.org/styles/liberty";
+
+const TERRAIN_MAP_STYLE = "https://tiles.stadiamaps.com/styles/stamen_terrain.json";
 
 const HW_MODEL: Record<number, string> = {
   0: "UNSET", 4: "TBEAM", 8: "T_ECHO", 10: "RAK4631", 13: "LILYGO_TBEAM_S3_CORE",
@@ -320,6 +322,16 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
   const [viewshedStatus, setViewshedStatus] = useState<Map<number, "loading" | "ready" | "error">>(new Map());
   const mapRef = useRef<MapRef>(null);
 
+  // ── Coverage proposal planning ──────────────────────────────────────────
+  const [proposals, setProposals] = useState<CoverageProposal[]>([]);
+  const [proposalPlanningMode, setProposalPlanningMode] = useState(false);
+  const [showProposals, setShowProposals] = useState(true);
+  const [proposalsExpanded, setProposalsExpanded] = useState(false);
+  const [selectedProposal, setSelectedProposal] = useState<CoverageProposal | null>(null);
+  const mapStyle = terrainMode ? TERRAIN_MAP_STYLE : MAP_STYLE;
+  const proposalViewshedCache = useRef(new Map<string, GeoJSON.Feature<GeoJSON.Polygon>>());
+  const [proposalViewshedStatus, setProposalViewshedStatus] = useState<Map<string, "loading" | "ready" | "error">>(new Map());
+
   // When a node is focused (from Nodes tab or map popup): enable terrain coverage and fly to it.
   useEffect(() => {
     if (effectiveFocusedNodeId == null) return;
@@ -364,6 +376,14 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
   useEffect(() => {
     fetchTraceroutes();
   }, [fetchTraceroutes]);
+
+  // Fetch coverage proposals on mount
+  useEffect(() => {
+    fetch("/api/proposals")
+      .then((r) => r.json())
+      .then(setProposals)
+      .catch(console.error);
+  }, []);
 
   // Re-fetch when a new traceroute result arrives via WebSocket; clear pending action
   useEffect(() => {
@@ -521,6 +541,73 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showCoverage, terrainMode, effectiveFocusedNodeId, mappableMesh, mappableMqtt]);
 
+  // Fetch viewsheds for visible proposals whenever terrain mode is active.
+  // Uses same concurrency-limited queue pattern as the live node viewshed fetch.
+  useEffect(() => {
+    if (!showProposals || !terrainMode) return;
+    const visibleProposals = proposals.filter((p) => p.visible && !proposalViewshedCache.current.has(p.id));
+    if (visibleProposals.length === 0) return;
+
+    let cancelled = false;
+    const queue = [...visibleProposals];
+    let qi = 0;
+
+    const fetchOne = async (p: CoverageProposal) => {
+      const key = p.id;
+      setProposalViewshedStatus((prev) => new Map(prev).set(key, "loading"));
+      try {
+        const url = `/api/coverage/viewshed?lat=${p.lat}&lon=${p.lon}&radiusKm=${TERRAIN_FETCH_RADIUS_KM}&altitudeM=${p.altitudeM}`;
+        const r = await fetch(url);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const geojson = await r.json() as GeoJSON.Feature<GeoJSON.Polygon>;
+        if (!cancelled) {
+          proposalViewshedCache.current.set(key, geojson);
+          setProposalViewshedStatus((prev) => new Map(prev).set(key, "ready"));
+        }
+      } catch {
+        if (!cancelled) setProposalViewshedStatus((prev) => new Map(prev).set(key, "error"));
+      }
+    };
+
+    const worker = async () => {
+      for (;;) {
+        if (cancelled) break;
+        const idx = qi++;
+        if (idx >= queue.length) break;
+        await fetchOne(queue[idx]);
+      }
+    };
+
+    const CONCURRENCY = 3;
+    Promise.all(Array.from({ length: CONCURRENCY }, worker));
+
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showProposals, terrainMode, proposals]);
+
+  // Build GeoJSON for proposal coverage — always separate from live node coverage.
+  // In terrain mode: use cached viewshed polygons. In circle mode: use preset radius circles.
+  const proposalCoverageGeoJson = useMemo<GeoJSON.FeatureCollection>(() => {
+    if (!showProposals) return mkFeatureCollection([]);
+    const features: GeoJSON.Feature[] = [];
+    for (const p of proposals) {
+      if (!p.visible) continue;
+      const radius = MODEM_PRESET_RADIUS_KM[p.modemPreset] ?? DEFAULT_RADIUS_KM;
+      if (terrainMode) {
+        const cached = proposalViewshedCache.current.get(p.id);
+        if (!cached) continue;
+        const poly = radius < TERRAIN_FETCH_RADIUS_KM
+          ? clipViewshedToRadius(cached, p.lat, p.lon, radius)
+          : cached;
+        features.push({ ...poly, properties: { ...poly.properties, color: "#f59e0b" } });
+      } else {
+        features.push(buildCoverageCircle(p.lon, p.lat, radius, "#f59e0b", 64, false));
+      }
+    }
+    return mkFeatureCollection(features);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showProposals, terrainMode, proposals, proposalViewshedStatus]);
+
   // Build GeoJSON coverage layer.
   // In terrain mode: only show nodes whose polygon has been computed — no
   // placeholder circles.  Nodes pop onto the map as their terrain arrives.
@@ -656,9 +743,32 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
         key={allMappable.length > 0 ? "has-gps" : "no-gps"}
         initialViewState={initialView}
         style={{ width: "100%", height: "100%" }}
-        mapStyle={MAP_STYLE}
+        mapStyle={mapStyle}
         attributionControl={false}
-        onClick={() => setSelected(null)}
+        cursor={proposalPlanningMode ? "crosshair" : "grab"}
+        onClick={(e) => {
+          if (proposalPlanningMode) {
+            const { lng, lat } = e.lngLat;
+            const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+            const name = `Site ${letters[proposals.length % 26]}`;
+            // Fetch terrain elevation at click point; default to terrain + 3m antenna height.
+            fetch(`/api/elevation?lat=${lat}&lon=${lng}`)
+              .then((r) => r.json())
+              .then(({ elevationM }: { elevationM: number }) => {
+                const altitudeM = Math.round((isFinite(elevationM) ? elevationM : 0) + 3);
+                return fetch("/api/proposals", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ name, lat, lon: lng, altitudeM, modemPreset: 0, notes: null }),
+                }).then((r) => r.json());
+              })
+              .then((p: CoverageProposal) => setProposals((prev) => [...prev, p]))
+              .catch(console.error);
+          } else {
+            setSelected(null);
+            setSelectedProposal(null);
+          }
+        }}
       >
         <NavigationControl position="top-right" />
 
@@ -679,6 +789,25 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
               "line-color": ["get", "color"],
               "line-width": ["case", ["==", ["get", "focused"], 1], 2.5, 1.5],
               "line-opacity": ["case", ["==", ["get", "focused"], 1], 0.9, 0.65],
+            }}
+          />
+        </Source>
+
+        {/* Proposal coverage layer — always separate from live node coverage, amber styling */}
+        <Source id="proposal-coverage" type="geojson" data={proposalCoverageGeoJson}>
+          <Layer
+            id="proposal-coverage-fill"
+            type="fill"
+            paint={{ "fill-color": "#f59e0b", "fill-opacity": 0.18 }}
+          />
+          <Layer
+            id="proposal-coverage-outline"
+            type="line"
+            paint={{
+              "line-color": "#f59e0b",
+              "line-width": 1.5,
+              "line-dasharray": [3, 2],
+              "line-opacity": 0.8,
             }}
           />
         </Source>
@@ -769,6 +898,104 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
             </Marker>
           );
         })}
+
+        {/* Coverage proposal markers — amber pin with name label, draggable to reposition */}
+        {showProposals && proposals.filter((p) => p.visible).map((p) => (
+          <Marker
+            key={`proposal-${p.id}`}
+            longitude={p.lon}
+            latitude={p.lat}
+            anchor="bottom"
+            draggable
+            onClick={(e) => {
+              e.originalEvent.stopPropagation();
+              setSelectedProposal((prev) => prev?.id === p.id ? null : p);
+              setSelected(null);
+            }}
+            onDragStart={() => {
+              // Drop cached viewshed immediately so coverage clears while dragging
+              proposalViewshedCache.current.delete(p.id);
+              setProposalViewshedStatus((prev) => { const m = new Map(prev); m.delete(p.id); return m; });
+            }}
+            onDragEnd={(e) => {
+              const { lng, lat } = e.lngLat;
+              // Fetch terrain elevation at the new position, then PATCH lat/lon/altitude
+              fetch(`/api/elevation?lat=${lat}&lon=${lng}`)
+                .then((r) => r.json())
+                .then(({ elevationM }: { elevationM: number }) => {
+                  const altitudeM = Math.round((isFinite(elevationM) ? elevationM : 0) + 3);
+                  return fetch(`/api/proposals/${p.id}`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ lat, lon: lng, altitudeM }),
+                  }).then((r) => r.json());
+                })
+                .then((updated: CoverageProposal) => {
+                  setProposals((prev) => prev.map((x) => x.id === updated.id ? updated : x));
+                  setSelectedProposal((prev) => prev?.id === updated.id ? updated : prev);
+                })
+                .catch(console.error);
+            }}
+          >
+            <div style={styles.proposalMarker} title={`Proposal: ${p.name} — drag to reposition`}>
+              {/* Label on top */}
+              <span style={styles.proposalLabel}>{p.name}</span>
+              {/* Diamond head */}
+              <div style={styles.proposalDiamond} />
+              {/* Pole — bottom is the anchor point */}
+              <div style={styles.proposalPole} />
+            </div>
+          </Marker>
+        ))}
+
+        {/* Proposal popup — edit/delete/copy for a selected proposal */}
+        {selectedProposal && (
+          <Popup
+            longitude={selectedProposal.lon}
+            latitude={selectedProposal.lat}
+            anchor="top"
+            offset={8}
+            closeButton={true}
+            closeOnClick={false}
+            onClose={() => setSelectedProposal(null)}
+            style={{ fontFamily: "monospace" }}
+          >
+            <ProposalPopup
+              proposal={selectedProposal}
+              onUpdate={(updated) => {
+                fetch(`/api/proposals/${updated.id}`, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    name: updated.name,
+                    altitudeM: updated.altitudeM,
+                    modemPreset: updated.modemPreset,
+                    notes: updated.notes,
+                  }),
+                })
+                  .then((r) => r.json())
+                  .then((p: CoverageProposal) => {
+                    setProposals((prev) => prev.map((x) => x.id === p.id ? p : x));
+                    setSelectedProposal(p);
+                    // Invalidate cached viewshed for this proposal (preset/alt changed)
+                    proposalViewshedCache.current.delete(p.id);
+                    setProposalViewshedStatus((prev) => { const m = new Map(prev); m.delete(p.id); return m; });
+                  })
+                  .catch(console.error);
+              }}
+              onDelete={() => {
+                fetch(`/api/proposals/${selectedProposal.id}`, { method: "DELETE" })
+                  .then(() => {
+                    setProposals((prev) => prev.filter((x) => x.id !== selectedProposal.id));
+                    proposalViewshedCache.current.delete(selectedProposal.id);
+                    setProposalViewshedStatus((prev) => { const m = new Map(prev); m.delete(selectedProposal.id); return m; });
+                    setSelectedProposal(null);
+                  })
+                  .catch(console.error);
+              }}
+            />
+          </Popup>
+        )}
 
         {selected && selectedLon != null && selectedLat != null && (() => {
           // Focus this node's coverage from within the map popup.
@@ -1088,6 +1315,136 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
             </div>
           );
         })()}
+
+        {/* ── Proposals panel ───────────────────────────────────────────── */}
+        {(() => {
+          const proposalTerrainStatus = (() => {
+            if (!terrainMode || proposals.length === 0) return null;
+            const visible = proposals.filter((p) => p.visible);
+            if (visible.length === 0) return null;
+            const total  = visible.length;
+            const done   = visible.filter((p) => proposalViewshedStatus.get(p.id) !== "loading" && proposalViewshedCache.current.has(p.id)).length;
+            const errors = visible.filter((p) => proposalViewshedStatus.get(p.id) === "error").length;
+            if (done < total) return { text: `⛰ ${done}/${total}`, color: "#fbbf24", title: "Computing terrain line-of-sight for proposals…" };
+            return { text: errors > 0 ? `⛰ ${errors} failed` : "⛰ ready", color: errors > 0 ? "#fca5a5" : "#86efac", title: undefined };
+          })();
+
+          return (
+        <div style={{ ...styles.controlPanel }}>
+          {/* Always-visible summary row */}
+          <div style={{ display: "flex", gap: "0.3rem", alignItems: "center" }}>
+            <span style={styles.controlLabel}>Proposals:</span>
+            <span style={styles.summaryPill}>
+              {proposals.length === 0 ? "none" : `${proposals.filter((p) => p.visible).length}/${proposals.length}`}
+            </span>
+            <button
+              style={{
+                ...ageFilterBtnStyle(proposalPlanningMode),
+                ...(proposalPlanningMode ? { borderColor: "#f59e0b", color: "#f59e0b", background: "#422006" } : {}),
+              }}
+              onClick={() => setProposalPlanningMode((v) => !v)}
+              title={proposalPlanningMode ? "Click map to drop proposal pins. Click again to exit." : "Enter planning mode to add proposal pins"}
+            >
+              {proposalPlanningMode ? "✦ Placing…" : "+ Place"}
+            </button>
+            {proposalTerrainStatus && (
+              <span style={{ color: proposalTerrainStatus.color, fontSize: "0.7rem", fontFamily: "monospace" }} title={proposalTerrainStatus.title}>
+                {proposalTerrainStatus.text}
+              </span>
+            )}
+            {proposals.length > 0 && (
+              <button
+                style={ageFilterBtnStyle(proposalsExpanded)}
+                onClick={() => setProposalsExpanded((v) => !v)}
+                title="Show/hide proposal list"
+              >
+                {proposalsExpanded ? "▲" : "▼"}
+              </button>
+            )}
+          </div>
+
+          {/* Expanded proposal list */}
+          {proposalsExpanded && proposals.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.25rem", paddingTop: "0.15rem", borderTop: "1px solid #1e293b", width: "100%" }}>
+              {proposals.map((p) => (
+                <div key={p.id} style={{ display: "flex", gap: "0.3rem", alignItems: "center" }}>
+                  <button
+                    style={{
+                      ...ageFilterBtnStyle(p.visible),
+                      padding: "0.15rem 0.4rem",
+                      minWidth: "2.5rem",
+                      ...(p.visible ? { borderColor: "#f59e0b", color: "#f59e0b", background: "#422006" } : {}),
+                    }}
+                    onClick={() => {
+                      fetch(`/api/proposals/${p.id}`, {
+                        method: "PATCH",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ visible: !p.visible }),
+                      })
+                        .then((r) => r.json())
+                        .then((updated: CoverageProposal) =>
+                          setProposals((prev) => prev.map((x) => x.id === updated.id ? updated : x))
+                        )
+                        .catch(console.error);
+                    }}
+                    title={p.visible ? "Hide this proposal" : "Show this proposal"}
+                  >
+                    {p.visible ? "●" : "○"}
+                  </button>
+                  <span style={{ flex: 1, color: "#cbd5e1", fontSize: "0.7rem", fontFamily: "monospace" }}>
+                    {p.name}
+                  </span>
+                  <span style={{ color: "#64748b", fontSize: "0.65rem", fontFamily: "monospace" }}>
+                    {MODEM_PRESET_LABEL[p.modemPreset]?.replace(/_/g, " ") ?? `#${p.modemPreset}`}
+                  </span>
+                  <button
+                    style={{ ...ageFilterBtnStyle(false), padding: "0.15rem 0.4rem", color: "#ef4444" }}
+                    onClick={() => {
+                      fetch(`/api/proposals/${p.id}`, { method: "DELETE" })
+                        .then(() => {
+                          setProposals((prev) => prev.filter((x) => x.id !== p.id));
+                          proposalViewshedCache.current.delete(p.id);
+                          setProposalViewshedStatus((prev) => { const m = new Map(prev); m.delete(p.id); return m; });
+                          if (selectedProposal?.id === p.id) setSelectedProposal(null);
+                        })
+                        .catch(console.error);
+                    }}
+                    title="Delete this proposal"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+              {/* Copy all proposals as GeoJSON FeatureCollection */}
+              <button
+                style={{ ...ageFilterBtnStyle(false), marginTop: "0.1rem", textAlign: "center", width: "100%" }}
+                onClick={() => {
+                  const fc: GeoJSON.FeatureCollection = {
+                    type: "FeatureCollection",
+                    features: proposals.map((p) => ({
+                      type: "Feature",
+                      geometry: { type: "Point", coordinates: [p.lon, p.lat, p.altitudeM] },
+                      properties: {
+                        name: p.name,
+                        altitudeM: p.altitudeM,
+                        modemPreset: p.modemPreset,
+                        modemPresetLabel: MODEM_PRESET_LABEL[p.modemPreset] ?? `#${p.modemPreset}`,
+                        coverageRadiusKm: MODEM_PRESET_RADIUS_KM[p.modemPreset] ?? 10,
+                        notes: p.notes,
+                      },
+                    })),
+                  };
+                  navigator.clipboard.writeText(JSON.stringify(fc, null, 2)).catch(console.error);
+                }}
+                title="Copy all proposals as GeoJSON FeatureCollection to clipboard"
+              >
+                Copy All GeoJSON
+              </button>
+            </div>
+          )}
+        </div>
+          );
+        })()}
       </div>
 
       {/* Legend — bottom left */}
@@ -1124,6 +1481,17 @@ export function MapPage({ nodes, mqttNodes, showMesh, setShowMesh, showMqtt, set
               border: `1px solid ${coverageUnion ? "#3b82f6" : "#94a3b8"}`,
             }} />
             {terrainMode ? "Terrain LOS" : coverageUnion ? "Coverage (union)" : `${coverageRadiusKm}km range`}
+          </span>
+        )}
+        {showProposals && proposals.some((p) => p.visible) && (
+          <span style={styles.legendItem}>
+            <span style={{
+              display: "inline-block", width: "1rem", height: "1rem",
+              borderRadius: "2px",
+              background: "#f59e0b33",
+              border: "1px dashed #f59e0b",
+            }} />
+            Proposed site
           </span>
         )}
         <span style={{ color: "#64748b" }}>
@@ -1323,6 +1691,128 @@ function MqttPopup({ node, onFocusCoverage, onRefreshTerrain, terrainRefreshing 
 }
 
 // ---------------------------------------------------------------------------
+// Proposal popup component
+// ---------------------------------------------------------------------------
+
+function ProposalPopup({
+  proposal,
+  onUpdate,
+  onDelete,
+}: {
+  proposal: CoverageProposal;
+  onUpdate: (updated: CoverageProposal) => void;
+  onDelete: () => void;
+}) {
+  const [name, setName] = useState(proposal.name);
+  const [altitudeM, setAltitudeM] = useState(proposal.altitudeM);
+  const [modemPreset, setModemPreset] = useState(proposal.modemPreset);
+  const [notes, setNotes] = useState(proposal.notes ?? "");
+  const [dirty, setDirty] = useState(false);
+
+  const handleSave = () => {
+    onUpdate({ ...proposal, name: name.trim() || proposal.name, altitudeM, modemPreset, notes: notes.trim() || null });
+    setDirty(false);
+  };
+
+  const handleCopyGeoJSON = () => {
+    const feature: GeoJSON.Feature = {
+      type: "Feature",
+      geometry: { type: "Point", coordinates: [proposal.lon, proposal.lat, altitudeM] },
+      properties: {
+        name: name.trim() || proposal.name,
+        altitudeM,
+        modemPreset,
+        modemPresetLabel: MODEM_PRESET_LABEL[modemPreset] ?? `#${modemPreset}`,
+        coverageRadiusKm: MODEM_PRESET_RADIUS_KM[modemPreset] ?? 10,
+        notes: notes.trim() || null,
+      },
+    };
+    navigator.clipboard.writeText(JSON.stringify(feature, null, 2)).catch(console.error);
+  };
+
+  const inputStyle: React.CSSProperties = {
+    width: "100%",
+    background: "#f8fafc",
+    border: "1px solid #cbd5e1",
+    borderRadius: "0.25rem",
+    padding: "0.2rem 0.4rem",
+    fontFamily: "monospace",
+    fontSize: "0.75rem",
+    color: "#1e293b",
+    boxSizing: "border-box",
+  };
+
+  return (
+    <div style={{ ...popupStyles.popup, minWidth: "220px" }}>
+      <div style={{ ...popupStyles.tag, background: "#fef3c7", color: "#92400e" }}>Proposal</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
+        <div>
+          <label style={popupStyles.label}>Name</label>
+          <input
+            style={inputStyle}
+            value={name}
+            onChange={(e) => { setName(e.target.value); setDirty(true); }}
+          />
+        </div>
+        <div style={{ display: "flex", gap: "0.4rem" }}>
+          <div style={{ flex: 1 }}>
+            <label style={popupStyles.label}>Altitude (m)</label>
+            <input
+              style={inputStyle}
+              type="number"
+              min={0}
+              max={9000}
+              value={altitudeM}
+              onChange={(e) => { setAltitudeM(Number(e.target.value)); setDirty(true); }}
+            />
+          </div>
+          <div style={{ flex: 2 }}>
+            <label style={popupStyles.label}>Modem Preset</label>
+            <select
+              style={inputStyle}
+              value={modemPreset}
+              onChange={(e) => { setModemPreset(Number(e.target.value)); setDirty(true); }}
+            >
+              {Object.entries(MODEM_PRESET_LABEL).map(([k, v]) => (
+                <option key={k} value={k}>{v.replace(/_/g, " ")}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+        <div>
+          <label style={popupStyles.label}>Notes</label>
+          <textarea
+            style={{ ...inputStyle, resize: "vertical", minHeight: "2.5rem" }}
+            value={notes}
+            onChange={(e) => { setNotes(e.target.value); setDirty(true); }}
+          />
+        </div>
+        <div style={{ color: "#64748b", fontSize: "0.65rem", fontFamily: "monospace" }}>
+          {proposal.lat.toFixed(5)}, {proposal.lon.toFixed(5)}
+          &nbsp;·&nbsp;{MODEM_PRESET_RADIUS_KM[modemPreset] ?? 10}km radius
+        </div>
+      </div>
+      <div style={popupStyles.actions}>
+        {dirty && (
+          <button style={popupActionBtnStyle(false)} onClick={handleSave}>
+            Save Changes
+          </button>
+        )}
+        <button style={popupActionBtnStyle(false)} onClick={handleCopyGeoJSON}>
+          Copy GeoJSON
+        </button>
+        <button
+          style={{ ...popupActionBtnStyle(false), borderColor: "#fca5a5", color: "#dc2626" }}
+          onClick={onDelete}
+        >
+          Delete Proposal
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Styles
 // ---------------------------------------------------------------------------
 
@@ -1428,6 +1918,40 @@ const styles: Record<string, React.CSSProperties> = {
     width: "1.5rem",
     height: 0,
     borderTop: "2px solid #94a3b8",
+  },
+  proposalMarker: {
+    display: "flex",
+    flexDirection: "column" as const,
+    alignItems: "center",
+    cursor: "pointer",
+  },
+  proposalDiamond: {
+    width: "14px",
+    height: "14px",
+    background: "#f59e0b",
+    border: "2px solid #fff",
+    transform: "rotate(45deg)",
+    boxShadow: "0 0 4px #f59e0b88",
+    flexShrink: 0,
+  },
+  proposalPole: {
+    width: "2px",
+    height: "18px",
+    background: "#f59e0b",
+    flexShrink: 0,
+  },
+  proposalLabel: {
+    fontSize: "0.6rem",
+    fontFamily: "monospace",
+    color: "#fef3c7",
+    fontWeight: "bold",
+    background: "#78350fdd",
+    borderRadius: "0.2rem",
+    padding: "0 0.25rem",
+    marginTop: "2px",
+    whiteSpace: "nowrap" as const,
+    pointerEvents: "none" as const,
+    boxShadow: "0 1px 3px #00000066",
   },
 };
 

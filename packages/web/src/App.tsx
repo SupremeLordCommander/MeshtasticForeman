@@ -543,29 +543,6 @@ export function App() {
           )}
         </div>
 
-        {/* ── Settings menu ─────────────────────────────────────────────────── */}
-        <div ref={settingsRef} style={styles.menuContainer}>
-          <button onClick={() => setSettingsOpen((v) => !v)} style={menuBtnStyle(settingsOpen, true)}>
-            Settings
-            <span style={{ color: "#475569", marginLeft: "0.3rem", fontSize: "0.65rem" }}>▾</span>
-          </button>
-
-          {settingsOpen && (
-            <div style={styles.menuPanel}>
-              <div style={styles.menuSection}>
-                <span style={styles.menuSectionLabel}>Configure</span>
-                <button style={menuNavBtn(tab === "overrides")} onClick={() => navigate("overrides")}>
-                  Overrides
-                  {overrides.size > 0 && <span style={styles.menuCount}>{overrides.size}</span>}
-                </button>
-                <button style={menuNavBtn(tab === "config")} onClick={() => navigate("config")}>
-                  Device Config
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-
         {/* ── System menu ───────────────────────────────────────────────────── */}
         <div ref={menuRef} style={styles.menuContainer}>
           <button onClick={() => setMenuOpen((v) => !v)} style={menuBtnStyle(menuOpen, connected)}>
@@ -731,6 +708,29 @@ export function App() {
                 </span>
               </div>
 
+            </div>
+          )}
+        </div>
+
+        {/* ── Settings menu ─────────────────────────────────────────────────── */}
+        <div ref={settingsRef} style={styles.menuContainer}>
+          <button onClick={() => setSettingsOpen((v) => !v)} style={menuBtnStyle(settingsOpen, true)}>
+            Settings
+            <span style={{ color: "#475569", marginLeft: "0.3rem", fontSize: "0.65rem" }}>▾</span>
+          </button>
+
+          {settingsOpen && (
+            <div style={styles.menuPanel}>
+              <div style={styles.menuSection}>
+                <span style={styles.menuSectionLabel}>Configure</span>
+                <button style={menuNavBtn(tab === "overrides")} onClick={() => navigate("overrides")}>
+                  Overrides
+                  {overrides.size > 0 && <span style={styles.menuCount}>{overrides.size}</span>}
+                </button>
+                <button style={menuNavBtn(tab === "config")} onClick={() => navigate("config")}>
+                  Device Config
+                </button>
+              </div>
             </div>
           )}
         </div>
