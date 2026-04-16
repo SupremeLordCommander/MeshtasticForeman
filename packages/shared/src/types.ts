@@ -157,6 +157,22 @@ export interface NodeOverride {
 }
 
 /**
+ * A hypothetical node location for coverage extension planning.
+ * Stored locally; not tied to any live mesh node.
+ */
+export interface CoverageProposal {
+  id: string;
+  name: string;
+  lat: number;
+  lon: number;
+  altitudeM: number;
+  modemPreset: number;
+  notes: string | null;
+  visible: boolean;
+  createdAt: string;
+}
+
+/**
  * Full device configuration snapshot.
  * radioConfig and moduleConfig are keyed by section name (e.g. "lora", "mqtt")
  * and contain the raw protobuf values as plain JSON.

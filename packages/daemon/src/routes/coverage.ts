@@ -357,6 +357,31 @@ export async function registerCoverageRoutes(app: FastifyInstance, db: PGlite) {
    *   lon      – node longitude (required)
    *   radiusKm – must match the radius used when the polygon was cached (default 20)
    */
+  /**
+   * GET /api/elevation
+   *
+   * Returns the terrain elevation at a single lat/lon point, using the same
+   * three-tier cache as the viewshed API (memory → DB → Open-Elevation).
+   *
+   * Query params:
+   *   lat – latitude  (required)
+   *   lon – longitude (required)
+   *
+   * Response: { elevationM: number }
+   */
+  app.get("/api/elevation", async (req, reply) => {
+    const q = req.query as Record<string, string | undefined>;
+    const lat = Number(q.lat);
+    const lon = Number(q.lon);
+
+    if (!isFinite(lat) || lat < -90 || lat > 90 || !isFinite(lon) || lon < -180 || lon > 180) {
+      return reply.status(400).send({ error: "Invalid lat/lon" });
+    }
+
+    const [elevationM] = await fetchElevations(db, [{ lat, lon }]);
+    return { elevationM };
+  });
+
   app.delete("/api/coverage/viewshed", async (req, reply) => {
     const q = req.query as Record<string, string | undefined>;
     const lat      = Number(q.lat);

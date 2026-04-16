@@ -13,6 +13,7 @@ import { MqttGateway } from "./mqtt/gateway.js";
 import { registerDeviceRoutes } from "./routes/devices.js";
 import { registerAnalyticsRoutes } from "./routes/analytics.js";
 import { registerCoverageRoutes } from "./routes/coverage.js";
+import { registerProposalRoutes } from "./routes/proposals.js";
 import { registerWsRoute } from "./routes/websocket.js";
 import { syncHwModels } from "./hw-models.js";
 
@@ -139,6 +140,7 @@ async function main() {
   await registerDeviceRoutes(app, deviceManager, mqttGateway, db);
   await registerAnalyticsRoutes(app, db);
   await registerCoverageRoutes(app, db);
+  await registerProposalRoutes(app, db);
   await registerWsRoute(app, deviceManager, mqttGateway, db);
 
   // Fallback to index.html for SPA routing

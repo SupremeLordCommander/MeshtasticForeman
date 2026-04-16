@@ -265,6 +265,24 @@ const migrations: string[] = [
             name parsed from the MQTT topic (e.g. "LongFast", "MediumFast").
             Used to derive the modem preset for coverage radius estimation. */
   `ALTER TABLE mqtt_nodes ADD COLUMN IF NOT EXISTS channel_name TEXT;`,
+
+  /* 016 – coverage_proposals: stores hypothetical node locations for
+            coverage extension planning. Each proposal has its own lat/lon,
+            altitude, and modem preset so the viewshed API can compute its
+            coverage footprint independently of live nodes. */
+  `
+  CREATE TABLE IF NOT EXISTS coverage_proposals (
+    id           TEXT             PRIMARY KEY DEFAULT gen_random_uuid()::text,
+    name         TEXT             NOT NULL,
+    lat          DOUBLE PRECISION NOT NULL,
+    lon          DOUBLE PRECISION NOT NULL,
+    altitude_m   INTEGER          NOT NULL DEFAULT 2,
+    modem_preset INTEGER          NOT NULL DEFAULT 0,
+    notes        TEXT,
+    visible      BOOLEAN          NOT NULL DEFAULT TRUE,
+    created_at   TIMESTAMPTZ      NOT NULL DEFAULT now()
+  );
+  `,
 ];
 
 export async function runMigrations(db: PGlite) {
