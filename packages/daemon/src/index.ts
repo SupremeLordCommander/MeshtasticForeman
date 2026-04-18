@@ -95,7 +95,8 @@ async function main() {
   await app.register(fastifyWebsocket);
 
   // Serve built frontend from web package (in production)
-  const webDist = join(__dirname, "../../web/dist");
+  // WEB_DIST env var allows Electron packaging to override the default path
+  const webDist = process.env.WEB_DIST ?? join(__dirname, "../../web/dist");
   await app.register(fastifyStatic, {
     root: webDist,
     wildcard: false,
