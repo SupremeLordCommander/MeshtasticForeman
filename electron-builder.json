@@ -1,0 +1,61 @@
+{
+  "appId": "com.meshtasticforeman.app",
+  "productName": "Meshtastic Foreman",
+  "directories": {
+    "app": "electron-app",
+    "output": "dist-electron",
+    "buildResources": "build"
+  },
+  "files": [
+    "**/*"
+  ],
+  "extraResources": [
+    {
+      "from": "dist-daemon/daemon.js",
+      "to": "server/daemon.js"
+    },
+    {
+      "from": "dist-daemon/package.json",
+      "to": "server/package.json"
+    },
+    {
+      "from": "dist-daemon/node_modules",
+      "to": "server/node_modules",
+      "filter": [
+        "**/*",
+        "!**/nul",
+        "!**/con",
+        "!**/prn",
+        "!**/aux"
+      ]
+    },
+    {
+      "from": "packages/web/dist",
+      "to": "web",
+      "filter": [
+        "**/*"
+      ]
+    }
+  ],
+  "icon": "build/icon.png",
+  "win": {
+    "icon": "build/icon.png",
+    "target": [
+      {
+        "target": "nsis",
+        "arch": [
+          "x64"
+        ]
+      }
+    ]
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "allowElevation": true,
+    "installerIcon": "build/icon.ico",
+    "uninstallerIcon": "build/icon.ico",
+    "installerHeaderIcon": "build/icon.ico",
+    "include": "build/installer.nsh"
+  }
+}

@@ -10,13 +10,26 @@
     "format": "pnpm -r format",
     "test": "pnpm -r test",
     "cache:export": "pnpm --filter @foreman/daemon cache:export",
-    "cache:import": "pnpm --filter @foreman/daemon cache:import"
+    "cache:import": "pnpm --filter @foreman/daemon cache:import",
+    "build:web": "pnpm --filter @foreman/web build",
+    "build:daemon": "node scripts/bundle-daemon.js",
+    "electron:start": "electron electron-app",
+    "electron:build": "node scripts/sync-version.js && electron-builder --config electron-builder.json",
+    "build:installer": "pnpm run build:web && pnpm run build:daemon && pnpm run electron:build",
+    "clean:dist": "node -e \"const fs=require('fs'); ['dist-electron','dist-daemon'].forEach(d=>{if(fs.existsSync(d)){fs.rmSync(d,{recursive:true,force:true});console.log('Cleaned: '+d)}})\""
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.7.2",
+    "electron": "^39.8.8",
+    "electron-builder": "^26.8.1",
+    "esbuild": "^0.25.12"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
       "@meshtastic/core",
       "@meshtastic/transport-node-serial",
       "@serialport/bindings-cpp",
+      "electron",
       "esbuild"
     ]
   },

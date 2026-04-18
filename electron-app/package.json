@@ -1,0 +1,9 @@
+{
+  "name": "meshtastic-foreman",
+  "version": "0.7.6",
+  "description": "Meshtastic Foreman",
+  "main": "main.js",
+  "author": "",
+  "license": "ISC",
+  "dependencies": {}
+}
