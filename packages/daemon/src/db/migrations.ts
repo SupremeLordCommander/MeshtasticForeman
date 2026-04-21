@@ -283,6 +283,35 @@ const migrations: string[] = [
     created_at   TIMESTAMPTZ      NOT NULL DEFAULT now()
   );
   `,
+
+  /* 017 – mqtt_json_packets: raw JSON packets received from the MQTT broker
+            on 2/json topics. Nodes that have MQTT JSON mode enabled publish
+            decoded packets here instead of encrypted ServiceEnvelopes.
+            payload is stored as JSONB keyed by type (position, telemetry,
+            text, nodeinfo, etc.) for flexible future querying. */
+  `
+  CREATE TABLE IF NOT EXISTS mqtt_json_packets (
+    id           TEXT             PRIMARY KEY DEFAULT gen_random_uuid()::text,
+    packet_id    BIGINT,
+    from_node    BIGINT           NOT NULL,
+    to_node      BIGINT,
+    sender       TEXT,
+    channel      INT,
+    type         TEXT,
+    payload      JSONB,
+    rssi         INT,
+    snr          REAL,
+    hops_away    INT,
+    hop_start    INT,
+    region_path  TEXT,
+    channel_name TEXT,
+    gateway_id   TEXT,
+    rx_time      TIMESTAMPTZ      NOT NULL DEFAULT now(),
+    inserted_at  TIMESTAMPTZ      NOT NULL DEFAULT now()
+  );
+  CREATE INDEX IF NOT EXISTS mqtt_json_packets_from_time  ON mqtt_json_packets(from_node, rx_time DESC);
+  CREATE INDEX IF NOT EXISTS mqtt_json_packets_type_time  ON mqtt_json_packets(type, rx_time DESC);
+  `,
 ];
 
 export async function runMigrations(db: PGlite) {

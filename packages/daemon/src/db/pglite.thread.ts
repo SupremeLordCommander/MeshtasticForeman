@@ -1,12 +1,18 @@
 import { PGlite } from "@electric-sql/pglite";
 import { parentPort, workerData } from "node:worker_threads";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, rmSync, existsSync } from "node:fs";
+import { join } from "node:path";
 
 if (!parentPort) throw new Error("Must be run as a worker thread");
 
 const port = parentPort;
 
 mkdirSync(workerData.dataDir, { recursive: true });
+
+// Remove stale postmaster.pid left by a previous unclean shutdown.
+// Without this PGlite's embedded Postgres aborts with a WASM RuntimeError.
+const pidFile = join(workerData.dataDir, "postmaster.pid");
+if (existsSync(pidFile)) rmSync(pidFile);
 
 const db = new PGlite(workerData.dataDir);
 

@@ -106,13 +106,12 @@ export class MqttGateway extends EventEmitter {
       this.connected = true;
       console.log(`[mqtt] connected to ${this.cfg.broker}`);
 
-      // Subscribe to everything under msh/{country}/{state}/#
+      // Subscribe to everything under the configured root topic.
       // Regions use inconsistent depths (centralvalley = 4 levels, Humboldt/Eureka = 5 levels,
       // CentralCoast// = 5 levels with empty city) so a fixed +/+/2/e/# pattern misses some.
       // _handleInbound already finds 2/e by searching, so a broad # subscription is safe.
-      const parts = this.cfg.rootTopic.split("/");
-      const stateTopic = parts.slice(0, 3).join("/"); // msh/US/CA
-      const subTopic = `${stateTopic}/#`;
+      // Special value "all" subscribes to every topic on the broker.
+      const subTopic = this.cfg.rootTopic === "all" ? "#" : `${this.cfg.rootTopic}/#`;
       this.client!.subscribe(subTopic, (err) => {
         if (err) console.error("[mqtt] subscribe error:", err.message);
         else console.log(`[mqtt] subscribed to ${subTopic}`);
@@ -373,7 +372,7 @@ export class MqttGateway extends EventEmitter {
       gatewayId: state.gatewayId,
     });
 
-    const topic = `${this.cfg.rootTopic}/2/e/${ch.name}/${state.gatewayId}`;
+    const topic = `${this.cfg.rootTopic === "all" ? "msh" : this.cfg.rootTopic}/2/e/${ch.name}/${state.gatewayId}`;
     this.client.publish(topic, Buffer.from(toBinary(Protobuf.Mqtt.ServiceEnvelopeSchema, envelope)));
 
     const portnumName = isDecoded
@@ -428,8 +427,8 @@ export class MqttGateway extends EventEmitter {
       const lat = pos.latitudeI  != null ? pos.latitudeI  / 1e7 : null;
       const lon = pos.longitudeI != null ? pos.longitudeI / 1e7 : null;
       const alt = pos.altitude   ?? null;
-      const regionParts = this.cfg.rootTopic.split("/");
-      const regionPath  = regionParts.slice(1).join("/"); // strip leading "msh"
+      const publishRoot = this.cfg.rootTopic === "all" ? "msh" : this.cfg.rootTopic;
+      const regionPath  = publishRoot.split("/").slice(1).join("/"); // strip leading "msh"
       const rxTime = new Date().toISOString();
       if (lat !== null && lon !== null && !(lat === 0 && lon === 0)) {
         await this.db.query(
@@ -487,7 +486,7 @@ export class MqttGateway extends EventEmitter {
       gatewayId: state.gatewayId,
     });
 
-    const topic = `${this.cfg.rootTopic}/2/e/${ch.name}/${state.gatewayId}`;
+    const topic = `${this.cfg.rootTopic === "all" ? "msh" : this.cfg.rootTopic}/2/e/${ch.name}/${state.gatewayId}`;
     this.client.publish(topic, Buffer.from(toBinary(Protobuf.Mqtt.ServiceEnvelopeSchema, envelope)));
     console.log(`[mqtt] self ${Protobuf.Portnums.PortNum[portnum]} → ${topic}`);
   }
@@ -536,7 +535,7 @@ export class MqttGateway extends EventEmitter {
       gatewayId: state.gatewayId,
     });
 
-    const topic = `${this.cfg.rootTopic}/2/map/`;
+    const topic = `${this.cfg.rootTopic === "all" ? "msh" : this.cfg.rootTopic}/2/map/`;
     this.client.publish(topic, Buffer.from(toBinary(Protobuf.Mqtt.ServiceEnvelopeSchema, envelope)));
     console.log(`[mqtt] self MAP_REPORT_APP → ${topic}`);
   }
@@ -571,8 +570,19 @@ export class MqttGateway extends EventEmitter {
   // ---------------------------------------------------------------------------
 
   private async _handleInbound(topic: string, payload: Buffer): Promise<void> {
-    // Only process encrypted traffic: {root}/2/e/{channel}/{!gatewayId}
     const parts = topic.split("/");
+
+    // JSON traffic: {root}/2/json/{channel}/{!gatewayId}
+    const jsonIdx = parts.indexOf("json");
+    if (jsonIdx !== -1 && parts[jsonIdx - 1] === "2") {
+      const channelName = parts[jsonIdx + 1] ?? "unknown";
+      const gatewayId   = parts[jsonIdx + 2] ?? "unknown";
+      const regionPath  = parts.slice(1, jsonIdx - 1).filter(Boolean).join("/");
+      await this._handleJsonInbound(payload, channelName, gatewayId, regionPath);
+      return;
+    }
+
+    // Only process encrypted traffic: {root}/2/e/{channel}/{!gatewayId}
     const eIdx = parts.indexOf("e");
     if (eIdx === -1 || parts[eIdx - 1] !== "2") {
       console.log(`[mqtt] inbound skip (not 2/e): ${topic}`);
@@ -618,8 +628,8 @@ export class MqttGateway extends EventEmitter {
         const plain = this._decrypt(channelKey, packetId, fromNum,
           Buffer.from(pkt.payloadVariant.value as Uint8Array));
         data = fromBinary(Protobuf.Mesh.DataSchema, plain);
-      } catch (err) {
-        console.log(`[mqtt] inbound decrypt failed from=!${fromNum.toString(16).padStart(8,"0")}: ${err}`);
+      } catch {
+        console.log(`[mqtt] privately encrypted data from=!${fromNum.toString(16).padStart(8,"0")}`);
         return;
       }
     } else {
@@ -772,6 +782,91 @@ export class MqttGateway extends EventEmitter {
       lastGateway: gatewayId, regionPath, channelName, snr, hopsAway, distanceM: r.distance_m,
     };
     this.emit("mqtt_node:update", node);
+  }
+
+  private async _handleJsonInbound(
+    payload: Buffer,
+    channelName: string,
+    gatewayId: string,
+    regionPath: string,
+  ): Promise<void> {
+    let msg: Record<string, unknown>;
+    try {
+      msg = JSON.parse(payload.toString("utf8"));
+    } catch {
+      console.log("[mqtt] json inbound: failed to parse JSON");
+      return;
+    }
+
+    const fromNode = typeof msg.from === "number" ? msg.from : null;
+    if (!fromNode) {
+      console.log("[mqtt] json inbound: missing 'from' field");
+      return;
+    }
+
+    const type      = typeof msg.type      === "string" ? msg.type      : null;
+    const sender    = typeof msg.sender    === "string" ? msg.sender    : null;
+    const channel   = typeof msg.channel   === "number" ? msg.channel   : null;
+    const toNode    = typeof msg.to        === "number" ? msg.to        : null;
+    const packetId  = typeof msg.id        === "number" ? msg.id        : null;
+    const rssi      = typeof msg.rssi      === "number" ? msg.rssi      : null;
+    const snr       = typeof msg.snr       === "number" ? msg.snr       : null;
+    const hopsAway  = typeof msg.hops_away === "number" ? msg.hops_away : null;
+    const hopStart  = typeof msg.hop_start === "number" ? msg.hop_start : null;
+    const tsRaw     = typeof msg.timestamp === "number" ? msg.timestamp : null;
+    const rxTime    = tsRaw ? new Date(tsRaw * 1000).toISOString() : new Date().toISOString();
+    const pld       = (msg.payload && typeof msg.payload === "object") ? msg.payload : null;
+
+    console.log(`[mqtt] json inbound type=${type ?? "unknown"} from=${sender ?? "!"+fromNode.toString(16).padStart(8,"0")} channel=${channelName}`);
+
+    await this.db.query(
+      `INSERT INTO mqtt_json_packets
+         (packet_id, from_node, to_node, sender, channel, type, payload,
+          rssi, snr, hops_away, hop_start, region_path, channel_name, gateway_id, rx_time)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+      [packetId, fromNode, toNode, sender, channel, type,
+       pld ? JSON.stringify(pld) : null,
+       rssi, snr, hopsAway, hopStart, regionPath, channelName, gatewayId, rxTime]
+    );
+
+    // For position packets, also keep mqtt_nodes up-to-date so the node
+    // appears on the map immediately without waiting for a protobuf packet.
+    if (type === "position" && pld && typeof pld === "object") {
+      const p = pld as Record<string, unknown>;
+      const latI = typeof p.latitude_i  === "number" ? p.latitude_i  : null;
+      const lonI = typeof p.longitude_i === "number" ? p.longitude_i : null;
+      const alt  = typeof p.altitude    === "number" ? p.altitude    : null;
+
+      if (latI !== null && lonI !== null) {
+        const lat = latI / 1e7;
+        const lon = lonI / 1e7;
+
+        if (lat !== 0 || lon !== 0) {
+          const own   = this._getOwnLatLon();
+          const distM = own ? this._haversineMeters(own.lat, own.lon, lat, lon) : null;
+
+          await this.db.query(
+            `INSERT INTO mqtt_nodes(node_id, latitude, longitude, altitude, last_heard,
+               last_gateway, region_path, channel_name, snr, hops_away, distance_m)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+             ON CONFLICT(node_id) DO UPDATE SET
+               latitude     = EXCLUDED.latitude,
+               longitude    = EXCLUDED.longitude,
+               altitude     = COALESCE(EXCLUDED.altitude,   mqtt_nodes.altitude),
+               last_heard   = GREATEST(EXCLUDED.last_heard, mqtt_nodes.last_heard),
+               last_gateway = EXCLUDED.last_gateway,
+               region_path  = EXCLUDED.region_path,
+               channel_name = EXCLUDED.channel_name,
+               snr          = COALESCE(EXCLUDED.snr,        mqtt_nodes.snr),
+               hops_away    = COALESCE(EXCLUDED.hops_away,  mqtt_nodes.hops_away),
+               distance_m   = COALESCE(EXCLUDED.distance_m, mqtt_nodes.distance_m)`,
+            [fromNode, lat, lon, alt, rxTime, gatewayId, regionPath, channelName, snr, hopsAway, distM]
+          );
+
+          await this._emitNodeUpdate(fromNode, rxTime, gatewayId, regionPath, channelName, snr, hopsAway);
+        }
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------
