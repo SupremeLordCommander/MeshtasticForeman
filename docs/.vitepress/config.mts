@@ -1,6 +1,7 @@
 import { defineConfig } from 'vitepress'
 
 export default defineConfig({
+  base: '/MeshtasticForeman/',
   vite: {
     ssr: {
       noExternal: ['vitepress-carbon'],
