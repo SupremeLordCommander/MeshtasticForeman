@@ -32,9 +32,4 @@ features:
     details: Full HTTP API for automation, scripting, and integration with external tools and workflows.
     link: /api
     linkText: Learn more
-  - icon: 🗺️
-    title: Terrain & Mapping
-    details: Visualize node positions on a map with offline terrain cache support for remote deployments.
-    link: /guide/getting-started
-    linkText: Learn more
 ---
