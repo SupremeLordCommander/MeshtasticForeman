@@ -1,12 +1,20 @@
 import { defineConfig } from 'vitepress'
 
 export default defineConfig({
+  vite: {
+    ssr: {
+      noExternal: ['vitepress-carbon'],
+    },
+  },
   title: 'MeshtasticForeman',
   description: 'Self-hosted dashboard and API for Meshtastic mesh networks',
   appearance: true,
   ignoreDeadLinks: true,
   head: [
-    ['link', { rel: 'icon', type: 'image/svg+xml', href: '/logo.svg' }]
+    ['link', { rel: 'icon', type: 'image/svg+xml', href: '/logo.svg' }],
+    ['link', { rel: 'preconnect', href: 'https://fonts.googleapis.com' }],
+    ['link', { rel: 'preconnect', href: 'https://fonts.gstatic.com', crossorigin: '' }],
+    ['link', { rel: 'stylesheet', href: 'https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap' }],
   ],
   themeConfig: {
     logo: '/logo.svg',
@@ -14,6 +22,7 @@ export default defineConfig({
       { text: 'Home', link: '/' },
       { text: 'Guide', link: '/guide/getting-started' },
       { text: 'API', link: '/api' },
+      { text: '⚠ Meshtastic Fork', link: 'https://meshtastic.org' },
     ],
     sidebar: {
       '/guide/': [

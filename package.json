@@ -4,9 +4,9 @@
   "private": true,
   "description": "Persistent daemon + web UI for Meshtastic device management",
   "scripts": {
-    "docs:dev": "vitepress dev docs",
-    "docs:build": "vitepress build docs",
-    "docs:preview": "vitepress preview docs",
+    "docs:dev": "pnpm --filter @foreman/docs dev",
+    "docs:build": "pnpm --filter @foreman/docs build",
+    "docs:preview": "pnpm --filter @foreman/docs preview",
     "dev": "pnpm --parallel -r dev",
     "build": "pnpm -r build",
     "lint": "pnpm -r lint",
@@ -25,8 +25,7 @@
     "@electron/rebuild": "^3.7.2",
     "electron": "^39.8.8",
     "electron-builder": "^26.8.1",
-    "esbuild": "^0.25.12",
-    "vitepress": "^1.6.4"
+    "esbuild": "^0.25.12"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

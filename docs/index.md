@@ -1,27 +1,40 @@
 ---
 layout: home
 
+hero:
+  name: MeshtasticForeman
+  text: Self-hosted Mesh Network Management
+  tagline: Persistent daemon and web dashboard for Meshtastic device control — runs in the background, survives restarts.
+  image:
+    src: /logo.svg
+    alt: MeshtasticForeman
+  actions:
+    - theme: brand
+      text: Get Started
+      link: /guide/getting-started
+    - theme: alt
+      text: API Reference
+      link: /api
+
+features:
+  - icon: 📡
+    title: Persistent Daemon
+    details: Keeps your Meshtastic connection alive in the background — survives UI restarts and system reboots.
+    link: /guide/getting-started
+    linkText: Learn more
+  - icon: 🖥️
+    title: Web Dashboard
+    details: Monitor nodes, view messages, and manage channels from a clean browser-based interface.
+    link: /guide/getting-started
+    linkText: Learn more
+  - icon: 🔌
+    title: REST API
+    details: Full HTTP API for automation, scripting, and integration with external tools and workflows.
+    link: /api
+    linkText: Learn more
+  - icon: 🗺️
+    title: Terrain & Mapping
+    details: Visualize node positions on a map with offline terrain cache support for remote deployments.
+    link: /guide/getting-started
+    linkText: Learn more
 ---
-
-<div style="text-align: center; padding: 2rem 0;">
-
-# MeshtasticForeman
-
-Self-hosted dashboard and API for Meshtastic mesh networks.
-
-## Quick Links
-
-- [Getting Started Guide](/guide/getting-started) — Installation and setup
-- [Architecture](/guide/architecture) — How the system works
-- [API Reference](/api) — Full API documentation
-- [Roadmap](/guide/roadmap) — Feature tracking
-
-## Commands
-
-```sh
-pnpm docs:dev      # Start dev server (localhost:5173)
-pnpm docs:build    # Build static docs
-pnpm docs:preview # Preview build
-```
-
-</div>
