@@ -1,0 +1,306 @@
+/* ── Brand colors — Carbon green ──────────────────────────────── */
+
+:root {
+  --vp-c-brand: #6f42c1;
+  --vp-c-brand-1: #8b5cf6;
+  --vp-c-brand-2: #7c3aed;
+  --vp-c-brand-3: #6d28d9;
+  --vp-c-brand-soft: rgba(111, 66, 193, 0.14);
+
+  --vp-button-brand-bg: #6f42c1;
+  --vp-button-brand-hover-bg: #7c3aed;
+  --vp-button-brand-active-bg: #6d28d9;
+  --vp-button-brand-border: #6f42c1;
+  --vp-button-brand-hover-border: #7c3aed;
+  --vp-button-brand-text: #ffffff;
+  --vp-button-brand-hover-text: #ffffff;
+
+  --vp-font-family-base: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --vp-font-family-mono: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace;
+
+  --vp-c-bg: #ffffff;
+  --vp-c-bg-soft: #f6f8fa;
+  --vp-c-bg-alt: #fafbfc;
+
+  --vp-c-text-1: #24292f;
+  --vp-c-text-2: #57606a;
+  --vp-c-text-3: #8b8b8b;
+
+  --vp-c-border: #d0d7de;
+  --vp-c-divider: #d0d7de;
+}
+
+.dark {
+  --vp-c-brand: #a78bfa;
+  --vp-c-brand-1: #c4b5fd;
+  --vp-c-brand-2: #8b5cf6;
+  --vp-c-brand-3: #7c3aed;
+  --vp-c-brand-soft: rgba(167, 139, 250, 0.16);
+
+  --vp-c-bg: #0d1117;
+  --vp-c-bg-soft: #161b22;
+  --vp-c-bg-alt: #21262d;
+
+  --vp-c-text-1: #e6edf3;
+  --vp-c-text-2: #8b949e;
+  --vp-c-text-3: #6e7681;
+
+  --vp-c-border: #30363d;
+  --vp-c-divider: #30363d;
+}
+
+/* ── Fork pill in navbar ──────────────────────────────────────── */
+
+.VPNavBarMenu a[href="https://meshtastic.org"] {
+  background-color: rgba(234, 179, 8, 0.12);
+  border: 1px solid rgba(234, 179, 8, 0.4);
+  color: #ca8a04 !important;
+  border-radius: 20px;
+  padding: 0.2rem 0.75rem !important;
+  font-size: 0.8rem !important;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.dark .VPNavBarMenu a[href="https://meshtastic.org"] {
+  background-color: rgba(234, 179, 8, 0.1);
+  border-color: rgba(234, 179, 8, 0.3);
+  color: #fbbf24 !important;
+}
+
+.VPNavBarMenu a[href="https://meshtastic.org"]:hover {
+  background-color: rgba(234, 179, 8, 0.2);
+}
+
+/* ── Navbar ───────────────────────────────────────────────────── */
+
+.VPNavBar {
+  border-bottom: 1px solid var(--vp-c-border);
+  backdrop-filter: blur(8px);
+}
+
+.VPNavBarTitle .title {
+  font-weight: 700;
+  font-size: 1.1rem;
+}
+
+/* ── Sidebar ──────────────────────────────────────────────────── */
+
+.VPSidebar {
+  background-color: var(--vp-c-bg-soft);
+  border-right: 1px solid var(--vp-c-border);
+}
+
+.VPSidebarItem.is-active .text {
+  color: var(--vp-c-brand);
+  font-weight: 600;
+  background-color: var(--vp-c-brand-soft);
+  border-radius: 4px;
+}
+
+/* ── Doc content ──────────────────────────────────────────────── */
+
+.vp-doc {
+  max-width: 800px !important;
+  padding-top: 2rem;
+}
+
+h1 {
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  line-height: 1.25;
+  margin-bottom: 0.5em;
+}
+
+h2, h3 {
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin-top: 1.5em;
+}
+
+/* ── Vertical accent line + MF badge on hero ──────────────────── */
+
+.VPHome .VPHero .main {
+  position: relative;
+  padding-left: 2rem;
+}
+
+/* Vertical gradient line */
+.VPHome .VPHero .main::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  width: 2px;
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    #8b5cf6 20%,
+    #8b5cf6 80%,
+    transparent
+  );
+}
+
+/* MF badge centered on the line */
+.VPHome .VPHero .main::after {
+  content: 'MF';
+  position: absolute;
+  left: -12px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 26px;
+  height: 26px;
+  background: var(--vp-c-bg);
+  border: 1px solid rgba(139, 92, 246, 0.6);
+  border-radius: 50%;
+  font-size: 0.70rem;
+  font-weight: 700;
+  color: #a78bfa;
+  text-align: center;
+  line-height: 26px;
+  letter-spacing: 0.03em;
+  z-index: 1;
+}
+
+div[class*='language-'] {
+  border-radius: 6px;
+  border: 1px solid var(--vp-c-border);
+  background-color: var(--vp-c-bg-alt);
+}
+
+:not(pre) > code {
+  background-color: var(--vp-c-bg-soft);
+  border: 1px solid var(--vp-c-border);
+  border-radius: 4px;
+  font-size: 0.875em;
+  padding: 0.2em 0.4em;
+}
+
+table {
+  border: 1px solid var(--vp-c-border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+th {
+  background-color: var(--vp-c-bg-soft);
+  font-weight: 600;
+}
+
+/* ── Buttons (global) ─────────────────────────────────────────── */
+
+.VPButton {
+  border-radius: 20px !important;
+  font-weight: 600;
+  transition: opacity 0.15s ease;
+}
+
+.VPButton:hover {
+  opacity: 0.85;
+}
+
+/* ── Homepage only (layout: home) ────────────────────────────── */
+
+.VPHome {
+  padding-bottom: 4rem;
+}
+
+/* Hero — two-column: text left, image right */
+.VPHome .VPHero {
+  padding: 5rem 2rem 4rem;
+}
+
+.VPHome .VPHero .name {
+  font-size: clamp(2.2rem, 5vw, 3.8rem);
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  line-height: 1.1;
+  color: var(--vp-c-brand) !important;
+  -webkit-text-fill-color: var(--vp-c-brand) !important;
+}
+
+.VPHome .VPHero .text {
+  font-size: clamp(1.5rem, 3vw, 2.5rem);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.15;
+  color: var(--vp-c-text-1) !important;
+  -webkit-text-fill-color: var(--vp-c-text-1) !important;
+}
+
+.VPHome .VPHero .tagline {
+  font-size: 1rem;
+  color: var(--vp-c-text-2);
+  line-height: 1.6;
+  margin-top: 1rem;
+}
+
+/* CTA buttons — left-aligned, pill-shaped */
+.VPHome .VPHero .actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 2rem;
+}
+
+/* Hero image */
+.VPHome .VPHero .image-container {
+  max-width: 640px;
+}
+
+.VPHome .VPHero .image-container img {
+  width: 640px;
+  height: 640px;
+}
+
+.VPHome .VPHero .image-bg {
+  display: none;
+}
+
+/* Feature cards */
+.VPHome .VPFeature {
+  border: 1px solid var(--vp-c-border);
+  border-radius: 12px;
+  background: var(--vp-c-bg-soft);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.VPHome .VPFeature:hover {
+  border-color: var(--vp-c-brand);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+}
+
+.dark .VPHome .VPFeature:hover {
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+}
+
+.VPHome .VPFeature .title {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.VPHome .VPFeature .details {
+  font-size: 0.875rem;
+  color: var(--vp-c-text-2);
+  line-height: 1.6;
+}
+
+/* "Learn more" link on feature cards */
+.VPHome .VPFeature .link-text {
+  color: var(--vp-c-brand);
+  font-weight: 600;
+  font-size: 0.875rem;
+}
+
+/* ── Misc ─────────────────────────────────────────────────────── */
+
+* {
+  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.15s ease;
+}
+
+.VPNavBarLogo {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
