@@ -244,14 +244,22 @@ th {
   margin-top: 2rem;
 }
 
+.VPImage {
+  margin-top: 35px;
+}
 /* Hero image */
 .VPHome .VPHero .image-container {
-  max-width: 640px;
+  /* max-width: 640px !important; */
+  flex-shrink: 0;
 }
 
-.VPHome .VPHero .image-container img {
-  width: 640px;
-  height: 640px;
+.VPHome .VPHero .image-container img,
+.VPHome .VPHero .image-container .image-src,
+img.VPImage.image-src {
+  width: 350px !important;
+  height: auto !important;
+  max-width: none !important;
+  max-height: none !important;
 }
 
 .VPHome .VPHero .image-bg {
