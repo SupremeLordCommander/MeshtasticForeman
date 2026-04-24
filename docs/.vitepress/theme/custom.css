@@ -244,9 +244,9 @@ th {
   margin-top: 2rem;
 }
 
-.VPImage {
+/* .VPImage {
   margin-top: 35px;
-}
+} */
 /* Hero image */
 .VPHome .VPHero .image-container {
   /* max-width: 640px !important; */
@@ -256,6 +256,7 @@ th {
 .VPHome .VPHero .image-container img,
 .VPHome .VPHero .image-container .image-src,
 img.VPImage.image-src {
+  margin-top: 35px;
   width: 350px !important;
   height: auto !important;
   max-width: none !important;
