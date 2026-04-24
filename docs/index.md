@@ -6,7 +6,7 @@ hero:
   text: Self-hosted Mesh Network Management
   tagline: Persistent daemon and web dashboard for Meshtastic device control — runs in the background, survives restarts.
   image:
-    src: /logo.svg
+    src: /logo.png
     alt: MeshtasticForeman
   actions:
     - theme: brand
