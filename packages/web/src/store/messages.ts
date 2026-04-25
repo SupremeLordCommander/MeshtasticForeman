@@ -22,13 +22,26 @@ function otherNodeId(msg: Message): number {
   return msg.role === "sent" ? msg.toNodeId : msg.fromNodeId;
 }
 
+function messageSignature(msg: Message): string {
+  return [
+    msg.packetId,
+    msg.fromNodeId,
+    msg.toNodeId,
+    msg.channelIndex,
+    msg.role,
+    msg.text ?? "",
+    msg.rxTime,
+  ].join(":");
+}
+
 function addOrUpdate(msg: Message) {
   const key = otherNodeId(msg);
   const existing = conversations.get(key) ?? [];
-  const idx = existing.findIndex((m) => m.id === msg.id);
+  const sig = messageSignature(msg);
+  const idx = existing.findIndex((m) => m.id === msg.id || messageSignature(m) === sig);
   if (idx >= 0) {
     const next = [...existing];
-    next[idx] = msg;
+    next[idx] = { ...next[idx], ...msg };
     conversations.set(key, next);
   } else {
     conversations.set(key, [...existing, msg]);
@@ -85,7 +98,11 @@ export function initMessageStore() {
       for (const [key, newMsgs] of grouped) {
         const existing = conversations.get(key) ?? [];
         const optimistic = existing.filter((m) => m.id.startsWith("local-"));
-        const merged = [...newMsgs, ...optimistic].sort(
+        const deduped = new Map<string, Message>();
+        for (const msg of [...newMsgs, ...optimistic]) {
+          deduped.set(messageSignature(msg), msg);
+        }
+        const merged = [...deduped.values()].sort(
           (a, b) => new Date(a.rxTime).getTime() - new Date(b.rxTime).getTime()
         );
         conversations.set(key, merged);
@@ -117,6 +134,11 @@ export function addOptimisticMessage(msg: Message) {
   const key = otherNodeId(msg);
   const existing = conversations.get(key) ?? [];
   conversations.set(key, [...existing, msg]);
+  notify();
+}
+
+export function clearConversation(nodeId: number) {
+  conversations.delete(nodeId);
   notify();
 }
 
