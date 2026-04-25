@@ -81,6 +81,12 @@ export async function registerDeviceRoutes(
     return reply.status(204).send();
   });
 
+  app.delete("/api/devices/:id/forget", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    await deviceManager.forget(id);
+    return reply.status(204).send();
+  });
+
   // ---------------------------------------------------------------------------
   // Node overrides — local fallback names/positions, never written to the mesh
   // ---------------------------------------------------------------------------

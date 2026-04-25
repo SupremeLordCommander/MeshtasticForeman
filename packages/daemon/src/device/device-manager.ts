@@ -292,6 +292,8 @@ export class DeviceManager extends EventEmitter {
     if (!device) return;
 
     this.devices.delete(deviceId);
+    const wt = this.watchdogTimers.get(deviceId);
+    if (wt) { clearInterval(wt); this.watchdogTimers.delete(deviceId); }
     this.myNodeIds.delete(deviceId);
     this.batteryLevels.delete(deviceId);
     this.gpsAcquired.delete(deviceId);
@@ -302,6 +304,14 @@ export class DeviceManager extends EventEmitter {
 
     this._emitStatus(deviceId, device.name, device.port, "disconnected");
     console.log(`[devices] disconnected ${device.name}`);
+  }
+
+  async forget(deviceId: string) {
+    const device = this.devices.get(deviceId);
+    if (device) {
+      await this.disconnect(deviceId);
+    }
+    await this.db.query("DELETE FROM devices WHERE id = $1", [deviceId]);
   }
 
   getDevice(id: string) {

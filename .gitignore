@@ -12,3 +12,4 @@ logs/
 Thumbs.db
 package-lock.json
 TD_cache/
+docs/.vitepress/cache/

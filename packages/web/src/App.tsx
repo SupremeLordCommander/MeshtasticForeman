@@ -101,6 +101,10 @@ async function apiDisconnect(id: string) {
   await fetch(`/api/devices/${id}`, { method: "DELETE" });
 }
 
+async function apiForget(id: string) {
+  await fetch(`/api/devices/${id}/forget`, { method: "DELETE" });
+}
+
 async function apiConnect(port: string, name: string) {
   await fetch("/api/devices/connect", {
     method: "POST",
@@ -133,6 +137,16 @@ export function App() {
   const [gpsPending, setGpsPending] = useState<Set<string>>(new Set());
   const [messageTarget, setMessageTarget] = useState<number | null>(null);
   const [focusedCoverageNodeId, setFocusedCoverageNodeId] = useState<number | null>(null);
+
+  const forgetDevice = useCallback(async (id: string) => {
+    await apiForget(id);
+    setDevices((prev) => prev.filter((d) => d.id !== id));
+    setDeviceConfigs((prev) => {
+      const next = new Map(prev);
+      next.delete(id);
+      return next;
+    });
+  }, []);
 
   // ── Map filters ────────────────────────────────────────────────────────────
   const [showMesh, setShowMesh] = useState(true);
@@ -566,7 +580,11 @@ export function App() {
                         <span style={{ color: d.status === "connected" ? "#22c55e" : d.status === "connecting" ? "#f59e0b" : "#ef4444" }}>●</span>
                         <span style={{ color: "#e2e8f0", fontWeight: "bold" }}>{d.port}</span>
                         {d.firmwareVersion && <span style={{ color: "#475569" }}>fw {d.firmwareVersion}</span>}
-                        {d.lastSeenAt && <span style={{ color: "#475569" }}>{formatRelative(d.lastSeenAt)}</span>}
+                        {d.lastSeenAt && (
+                          <span style={{ color: "#475569" }}>
+                            {d.status === "connected" ? formatRelative(d.lastSeenAt) : `Last seen ${formatRelative(d.lastSeenAt)}`}
+                          </span>
+                        )}
                         {d.batteryLevel != null && <BatteryBar level={d.batteryLevel} />}
                       </div>
                       <div style={{ display: "flex", gap: "0.3rem" }}>
@@ -584,6 +602,15 @@ export function App() {
                             disabled={d.status === "connecting"}
                           >
                             {d.status === "connecting" ? "Connecting…" : "Connect"}
+                          </button>
+                        )}
+                        {d.status === "disconnected" && (
+                          <button
+                            style={deviceActionBtn("remove")}
+                            onClick={() => forgetDevice(d.id)}
+                            title={d.lastSeenAt ? `Forget saved device last seen ${formatRelative(d.lastSeenAt)}` : "Forget saved device"}
+                          >
+                            Remove
                           </button>
                         )}
                       </div>
@@ -942,11 +969,16 @@ function menuNavBtn(active: boolean): React.CSSProperties {
   };
 }
 
-function deviceActionBtn(action: "connect" | "disconnect"): React.CSSProperties {
+function deviceActionBtn(action: "connect" | "disconnect" | "remove"): React.CSSProperties {
+  const palette = action === "connect"
+    ? { background: "#14532d", border: "#16a34a", color: "#4ade80" }
+    : action === "disconnect"
+      ? { background: "#450a0a", border: "#991b1b", color: "#f87171" }
+      : { background: "#3f2a08", border: "#a16207", color: "#fbbf24" };
   return {
-    background: action === "connect" ? "#14532d" : "#450a0a",
-    border: `1px solid ${action === "connect" ? "#16a34a" : "#991b1b"}`,
-    color: action === "connect" ? "#4ade80" : "#f87171",
+    background: palette.background,
+    border: `1px solid ${palette.border}`,
+    color: palette.color,
     padding: "0.15rem 0.6rem",
     borderRadius: "0.25rem",
     cursor: "pointer",
